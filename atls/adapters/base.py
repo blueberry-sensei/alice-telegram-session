@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -132,6 +133,18 @@ class SubprocessAdapter:
             kwargs["preexec_fn"] = os.setsid
         else:
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
+        # Resolve the executable the same way `is_available` does, and for the
+        # same reason it has to be said out loud: on Windows the two do NOT
+        # agree. `shutil.which` tries PATHEXT and finds `claude.cmd`, while
+        # CreateProcess only ever appends `.exe` to a bare name - so `doctor`
+        # reported "claude chạy được" and every real turn died with 127.
+        #
+        # A green health check in front of a broken call is worse than no health
+        # check: it moves the failure to the one moment nobody is watching.
+        resolved = shutil.which(cmd[0])
+        if resolved:
+            cmd = [resolved, *cmd[1:]]
 
         try:
             proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)

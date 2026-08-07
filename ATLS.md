@@ -77,6 +77,21 @@ atls doctor        # phải không còn mục ❌ ngoài thứ do thiếu .env
 Không xong giả: chỉ tuyên bố PASS cho phần có bằng chứng đã chạy. Phần chưa test được
 phải nói thẳng và biến thành next step.
 
+## [F] Đưa lên chạy thật, sống 24/7 — đọc `skills/atls-forever/SKILL.md`
+
+Chạy được trên terminal **không** có nghĩa là chạy được như một dịch vụ. Ba thứ khác
+nhau giữa hai môi trường đó, và cả ba đã cắn thật trong lần triển khai đầu tiên:
+
+- **PATH** — tác vụ nền không thừa kế PATH của terminal đã đăng ký nó (thoát 127);
+- **Đăng nhập** — service không thừa kế phiên đăng nhập tương tác ("Not logged in");
+- **Vòng đời** — tiến trình khởi động từ một phiên chat chết cùng phiên đó.
+
+Và một luật đọc kỹ hơn cả ba: **lệnh chẩn đoán có thể xanh trong khi lần chạy thật
+hỏng**, vì hai bên phân giải tên lệnh theo hai luật khác nhau. Một cổng kiểm tra xanh
+đứng trước một lời gọi hỏng còn tệ hơn không có cổng nào — nó dời chỗ hỏng sang đúng
+lúc không ai nhìn. Bằng chứng duy nhất được tính là **gọi thẳng adapter với một prompt
+thật**, và cuối cùng là **người dùng nhắn một tin thật rồi nhận được trả lời**.
+
 ## NHIỆM VỤ
 
 <!-- Viết nhiệm vụ ngay dưới dòng này. -->
