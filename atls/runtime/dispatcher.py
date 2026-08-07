@@ -115,7 +115,12 @@ class Dispatcher:
 
             # 4. Cửa sổ ≤ budget. Xây SAU khi các tin của chùm này đã nằm trong archive
             #    (ingest ghi trước khi debounce), nên nó đã bao gồm câu hỏi mới nhất.
-            window = build_window(self._store, chat_id, self._cfg.window_tokens, summary=summary)
+            window = build_window(
+                self._store, chat_id, self._cfg.window_tokens, summary=summary,
+                # Câu vừa gõ là truy vấn để tra archive. Không có nó thì agent chỉ
+                # còn bản tóm tắt đã bị viết đè nhiều lần — xem `atls/memory/recall.py`.
+                question=" ".join(m.text for m in batch if m.text).strip(),
+            )
 
             # 5. Session.
             choice = self._sessions.choose(chat_id, self._adapter.name)
@@ -184,7 +189,10 @@ class Dispatcher:
         if not result.ok and choice.resume:
             _log.info("chat %s: resume thất bại, mở session mới và chạy lại", chat_id)
             fresh = self._sessions.on_resume_failed(chat_id, choice, self._adapter.name)
-            window = build_window(self._store, chat_id, self._cfg.window_tokens)
+            window = build_window(
+                self._store, chat_id, self._cfg.window_tokens,
+                question=" ".join(m.text for m in batch if m.text).strip(),
+            )
             retry_prompt = f"{window.render()}\n\n{prompt}" if window.render() else prompt
             result = await self._adapter.run(
                 AgentRequest(

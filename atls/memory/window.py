@@ -18,8 +18,10 @@ Hai điều bảo đảm:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from atls.memory.recall import RECALL_BUDGET, recall
+from atls.memory.recall import render as recall_render
 from atls.memory.tokens import count_tokens, truncate_to_tokens
 from atls.store import StoredMessage, Store, Summary
 
@@ -40,9 +42,16 @@ class ConversationWindow:
     messages: list[StoredMessage]
     tokens: int
     truncated: bool
+    #: Tin cũ lôi từ archive lên vì có vẻ liên quan tới câu vừa hỏi. Xem
+    #: `atls/memory/recall.py` — nó vá chỗ hở mà bản tóm tắt bị viết đè để lại.
+    recalled: list[StoredMessage] = field(default_factory=list)
 
     def render(self) -> str:
         parts: list[str] = []
+        # Đặt TRƯỚC bản tóm tắt và hội thoại gần đây, vì nó là thứ cũ nhất. Đọc theo
+        # thứ tự thời gian thì agent không nhầm tin ba hôm trước là tin vừa nhắn.
+        if self.recalled:
+            parts.append(recall_render(self.recalled))
         if self.summary:
             parts.append(
                 "=== CHUYỆN ĐÃ XẢY RA TRƯỚC ĐÓ (bản tóm tắt tự động) ===\n"
@@ -62,10 +71,16 @@ def build_window(
     budget: int,
     *,
     summary: Summary | None = None,
+    question: str = "",
 ) -> ConversationWindow:
     """Dựng cửa sổ cho `chat_id` trong hạn mức `budget` token.
 
     `summary` truyền vào để Compactor dùng lại bản vừa tạo mà không phải đọc lại DB.
+
+    `question` là câu người dùng vừa gõ. Có nó thì archive được tra để kéo lên những
+    tin cũ liên quan — thứ đã rơi khỏi bản tóm tắt bị viết đè nhiều lần. Để trống thì
+    bỏ qua hẳn bước đó (Compactor dựng cửa sổ để NÉN, không để trả lời, nên nó không
+    cần và không nên kéo thêm gì vào).
     """
     if summary is None:
         summary = store.latest_summary(chat_id)
@@ -109,8 +124,24 @@ def build_window(
 
     picked.reverse()
     total = summary_tokens + sum(m.tokens or count_tokens(m.as_line()) for m in picked)
+
+    # Tra archive bằng phần hạn mức CÒN THỪA, không phải bằng hạn mức cộng thêm. Cửa
+    # sổ vượt trần là đúng thứ cả tầng này tồn tại để chặn, và một tính năng trí nhớ
+    # phá vỡ trần trí nhớ thì tự nó vô hiệu hoá chính nó.
+    recalled: list[StoredMessage] = []
+    if question:
+        spare = min(RECALL_BUDGET, max(0, limit - total))
+        if spare > 0:
+            recalled = recall(
+                store, chat_id, question,
+                exclude_ids={m.id for m in picked},
+                budget=spare,
+            )
+            total += sum(count_tokens(m.as_line()) for m in recalled)
+
     return ConversationWindow(
-        summary=summary_text, messages=picked, tokens=total, truncated=truncated
+        summary=summary_text, messages=picked, tokens=total,
+        truncated=truncated, recalled=recalled,
     )
 
 

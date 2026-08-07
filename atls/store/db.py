@@ -233,24 +233,44 @@ class Store:
             ).fetchall()
         return [self._row_to_message(r) for r in reversed(rows)]
 
-    def search(self, query: str, *, chat_id: str | None = None, limit: int = 20) -> list[StoredMessage]:
+    def search(
+        self,
+        query: str,
+        *,
+        chat_id: str | None = None,
+        limit: int = 20,
+        match_all: bool = True,
+    ) -> list[StoredMessage]:
         """Tìm toàn văn trong archive — đường trả lời "tuần trước ông này nói gì".
 
         FTS5 nhận cú pháp riêng (`AND`, `"..."`, `*`); chuỗi người dùng gõ có thể chứa
         ký tự làm vỡ parser. Bọc mỗi từ trong nháy kép rồi nối lại là cách rẻ nhất để
         vừa an toàn vừa giữ nghĩa "tìm mọi từ này".
+
+        `match_all=True` (mặc định, cho `/recall` người dùng gõ): tin phải chứa **mọi**
+        từ. Người gõ tay biết mình tìm gì và muốn ít kết quả.
+
+        `match_all=False`: chứa **bất kỳ** từ nào, xếp theo độ khớp bm25. Đây là chế độ
+        cho việc tra tự động từ một câu hỏi tự nhiên, và nó **không phải** tuỳ chọn cho
+        vui: hỏi *"đòn bẩy tối đa cho ZENUSDT là bao nhiêu"* sinh ra các từ
+        `zenusdt` + `nhieu`, còn câu trả lời đã lưu chỉ chứa `zenusdt`. Ở chế độ AND thì
+        nó **không bao giờ** khớp — và trả về rỗng là một kết quả hợp lệ, nên tính năng
+        sẽ chết lặng lẽ mà không ai nhận ra.
         """
         terms = [t for t in query.replace('"', " ").split() if t]
         if not terms:
             return []
-        match = " ".join(f'"{t}"' for t in terms)
+        joiner = " " if match_all else " OR "
+        match = joiner.join(f'"{t}"' for t in terms)
         sql = """SELECT m.* FROM messages_fts f JOIN messages m ON m.id = f.rowid
                  WHERE messages_fts MATCH ?"""
         params: list = [match]
         if chat_id:
             sql += " AND m.chat_id = ?"
             params.append(chat_id)
-        sql += " ORDER BY m.id DESC LIMIT ?"
+        # Khớp nhiều từ nhất lên đầu, không phải mới nhất lên đầu: ở chế độ OR thì
+        # "mới nhất" chỉ có nghĩa là "gần đây", không có nghĩa là "liên quan".
+        sql += " ORDER BY bm25(messages_fts) LIMIT ?" if not match_all else " ORDER BY m.id DESC LIMIT ?"
         params.append(limit)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
