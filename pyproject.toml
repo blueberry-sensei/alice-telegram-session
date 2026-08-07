@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alice-telegram-session"
+version = "0.1.0"
+description = "Lớp phiên và trí nhớ hội thoại để agent CLI sống 24/7 trên Telegram"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Blueberry Sensei" }]
+dependencies = [
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+# Đếm token chính xác thay vì heuristic. Không có thì atls/memory/tokens.py tự rơi về
+# ước lượng theo ký tự — sai số ~10%, đủ dùng vì budget đã chừa biên an toàn.
+tokens = ["tiktoken>=0.7"]
+# Chỉ cần khi bật khả năng gửi PDF.
+pdf = ["reportlab>=4.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+atls = "atls.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["atls*"]
+
+[tool.setuptools.package-data]
+atls = ["store/schema.sql"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
