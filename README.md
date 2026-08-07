@@ -331,6 +331,12 @@ ATLS_INGEST=polling                        # webhook khi lên server
 >
 > Chưa biết chat id? Bật `ATLS_ALLOW_ALL_CHATS=1`, chạy `atls run`, gõ `/whoami` trong
 > phòng của mình, chép id ra, rồi tắt cờ đó đi.
+>
+> **"Quyền thật" nghĩa là gì:** adapter `claude` chạy kèm `--dangerously-skip-permissions`,
+> tức là agent làm việc mà không hỏi lại — cả sản phẩm dựa trên điều đó. Nếu deployment
+> của bạn không tin tưởng được hết những người trong `ATLS_ALLOWED_CHATS`, đặt
+> `ATLS_AGENT_SKIP_PERMISSIONS=0`. Chậm hơn và có lúc agent sẽ kẹt chờ xác nhận, nhưng
+> lựa chọn đó phải nằm trong tay bạn chứ không nằm trong code.
 
 ### Bước 3 — Kiểm
 
