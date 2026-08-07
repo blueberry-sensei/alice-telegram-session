@@ -1,0 +1,35 @@
+[Unit]
+Description=Alice Telegram Session
+Documentation=https://github.com/blueberry-sensei/alice-telegram-session
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=alice
+WorkingDirectory=/opt/atls
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/atls/.venv/bin/python -m atls.cli run
+
+# Daemon phải sống lại sau mọi kiểu chết, kể cả agent CLI kéo cả tiến trình xuống.
+Restart=always
+RestartSec=5
+
+# Đợi lâu trước khi SIGKILL: một lượt agent có thể đang chạy việc thật (build, deploy)
+# và cắt giữa chừng để lại trạng thái dở dang khó dọn hơn là chờ thêm một phút.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=atls
+
+# Cách ly cơ bản. Không dùng ProtectHome/PrivateTmp vì agent CLI cần đọc thư mục
+# project và ghi file tạm thật.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

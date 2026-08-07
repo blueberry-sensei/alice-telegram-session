@@ -1,0 +1,23 @@
+services:
+  atls:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: atls
+    restart: unless-stopped
+    env_file: ../../.env
+    environment:
+      ATLS_DATA_DIR: /data
+    volumes:
+      # Trí nhớ hội thoại. Mất volume này là mất sạch lịch sử chat.
+      - atls-data:/data
+      # Thư mục làm việc của agent — nơi nó đọc/sửa code thật.
+      # Đổi đường dẫn bên trái cho khớp máy bạn.
+      - ../../workspace:/workspace
+    ports:
+      # Chỉ cần khi ATLS_INGEST=webhook. Đặt reverse proxy có TLS phía trước —
+      # Telegram CHỈ gọi HTTPS, không gọi HTTP thuần.
+      - "8443:8443"
+
+volumes:
+  atls-data:
