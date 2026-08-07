@@ -3,9 +3,9 @@
 Đọc [`ATLS.md`](ATLS.md) trước khi gõ dòng code đầu tiên của mỗi phiên. Năm luật dưới đây
 có hiệu lực **cho mọi lượt**.
 
-1. **Bốn ràng buộc cứng không được phá** (chi tiết ở `ATLS.md` mục A):
+1. **Sáu ràng buộc cứng không được phá** (chi tiết ở `ATLS.md` mục A):
    phiên ≤ 12h nhưng không mất trí nhớ · một chat một agent · cửa sổ luôn ≤ trần token ·
-   archive không bao giờ mất tin.
+   archive không bao giờ mất tin · cổng chat fail-CLOSED · một câu hỏi tối đa một ack.
 
 2. **Không tự đăng nhập, không nhập secret, không giải CAPTCHA.** Bàn giao cho người thật
    qua `capabilities/handoff.request_human()`. Mọi text qua `secrets.redact()` trước khi
@@ -23,7 +23,7 @@ có hiệu lực **cho mọi lượt**.
 ## Lệnh hay dùng
 
 ```bash
-pytest -q                    # 111 test, không cần Telegram thật
+pytest -q                    # 171 test, không cần Telegram thật
 atls doctor                  # kiểm cấu hình + CLI có sẵn
 atls chats                   # chat đã biết, số tin mỗi chat
 atls recall <từ khoá>        # tra archive từ terminal

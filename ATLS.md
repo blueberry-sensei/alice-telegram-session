@@ -10,7 +10,7 @@ Thiết kế đầy đủ: [`docs/specs/2026-08-07-alice-telegram-session-design
 Bạn đang làm việc trên **Alice Telegram Session** — lớp phiên và trí nhớ hội thoại đặt
 giữa Telegram và một agent CLI bất kỳ.
 
-## [A] Bốn ràng buộc cứng — vi phạm là hỏng sản phẩm, không phải hỏng code
+## [A] Sáu ràng buộc cứng — vi phạm là hỏng sản phẩm, không phải hỏng code
 
 1. **Phiên sống tối đa 12 giờ.** Quá hạn thì đóng và mở phiên mới — nhưng **không được
    mất trí nhớ**: cửa sổ hội thoại đã nén phải được dán vào phiên mới. Nếu bạn sửa
@@ -22,6 +22,13 @@ giữa Telegram và một agent CLI bất kỳ.
    phải cắt cứng làm lưới an toàn cuối cùng.
 4. **Archive không bao giờ mất tin.** `messages` không có đường xoá. Nén chỉ ghi thêm
    một row `summaries`, không đụng tới tin gốc.
+5. **Cổng chat fail-CLOSED.** `ATLS_ALLOWED_CHATS` trống ⇒ daemon từ chối khởi động,
+   trừ khi `ATLS_ALLOW_ALL_CHATS=1` được bật có ý thức. Bot chạy agent CLI với quyền
+   thật; cổng này là thứ duy nhất đứng giữa "một tin nhắn" và "một lệnh trên máy chủ".
+   Đừng bao giờ làm nó mềm đi cho tiện lúc thử.
+6. **Một câu hỏi, tối đa một câu trấn an.** Đúng một `AckGuard` cho cả lượt. Nối hai
+   guard lại thì cái sau không biết cái trước đã nói gì, và người dùng nhận hai tin
+   "chờ em chút" cho một câu hỏi.
 
 ## [B] Ba điều dễ làm sai, đã trả giá để biết
 
@@ -31,6 +38,13 @@ giữa Telegram và một agent CLI bất kỳ.
   ghi là mất tin thật.
 - **Ghi offset cho MỌI update, kể cả loại không xử lý.** Bỏ sót thì một `callback_query`
   lạ kẹt vĩnh viễn ở đầu hàng đợi và daemon quay vòng nóng.
+- **`LIMIT` trên `ORDER BY id ASC` cắt mất phần ĐUÔI.** Dựng cửa sổ hội thoại phải dùng
+  `messages_after_tail`; đếm vùng chưa nén phải dùng `unsummarized_stats` (không LIMIT).
+  Dùng nhầm thì lúc hệ thống tụt lại xa nhất cũng là lúc nó ngừng báo động, và agent trả
+  lời câu hỏi của hôm kia — rất tự tin, không để lại dấu vết gì trong log.
+- **Vòng nhận tin chỉ được thoát bằng cancel.** Một daemon còn sống mà không còn nghe thì
+  service manager không dựng lại. Mọi lỗi khác đều phải thành backoff rồi thử tiếp, và
+  task đó phải nằm trong `gather` của `App` chứ không được tạo rồi quên.
 
 ## [C] Ranh giới không được vượt
 
