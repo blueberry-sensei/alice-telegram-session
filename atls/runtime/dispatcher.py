@@ -95,28 +95,33 @@ class Dispatcher:
     async def _turn(self, chat_id: str, batch: list[Incoming], route: Route) -> None:
         started = time.time()
 
-        # 3. Nén trước khi dựng cửa sổ. Đồng bộ trong lượt: nén nền sinh ra cửa sổ đua
-        #    khi lượt kế tiếp đọc summary cũ trong lúc bản mới đang ghi dở.
-        summary = None
-        if self._compactor.needs_compaction(chat_id):
-            async with AckGuard(self._api, chat_id, after=self._cfg.ack_after,
-                                addressed=route.addressed, immediate=True) as ack:
-                summary = await self._compactor.maybe_compact(chat_id)
-            del ack
-
-        # 4. Cửa sổ ≤ budget. Xây SAU khi các tin của chùm này đã nằm trong archive
-        #    (ingest ghi trước khi debounce), nên nó đã bao gồm câu hỏi mới nhất.
-        window = build_window(self._store, chat_id, self._cfg.window_tokens, summary=summary)
-
-        # 5. Session.
-        choice = self._sessions.choose(chat_id, self._adapter.name)
-        prompt = self._build_prompt(window, choice, batch, route)
-
-        # 6. Gọi agent, vừa chạy vừa giữ ack.
+        # MỘT AckGuard cho cả lượt, bao trọn cả nén lẫn gọi agent.
+        #
+        # Trước đây có hai guard nối nhau: một cho nén (`immediate=True`), một cho agent.
+        # Guard đầu gửi ack rồi bị vứt đi cùng cờ `sent` của nó, nên guard sau không
+        # biết đã ack và gửi cái thứ hai — người dùng nhận HAI câu "chờ em chút" cho
+        # một câu hỏi. Tệ hơn: nếu lượt đó kết thúc bằng `[SILENT]`, nhánh dọn dẹp ở
+        # dưới nhìn vào cờ của guard SAU (False) nên không dọn, và câu "chờ em chút"
+        # của guard đầu nằm lại trong group một mình, không bao giờ có hồi kết.
+        needs_compaction = self._compactor.needs_compaction(chat_id)
         async with AckGuard(
             self._api, chat_id, after=self._cfg.ack_after,
-            addressed=route.addressed, immediate=route.likely_long,
+            addressed=route.addressed,
+            immediate=route.likely_long or needs_compaction,
         ) as ack:
+            # 3. Nén trước khi dựng cửa sổ. Đồng bộ trong lượt: nén nền sinh ra cửa sổ
+            #    đua khi lượt kế tiếp đọc summary cũ trong lúc bản mới đang ghi dở.
+            summary = await self._compactor.maybe_compact(chat_id) if needs_compaction else None
+
+            # 4. Cửa sổ ≤ budget. Xây SAU khi các tin của chùm này đã nằm trong archive
+            #    (ingest ghi trước khi debounce), nên nó đã bao gồm câu hỏi mới nhất.
+            window = build_window(self._store, chat_id, self._cfg.window_tokens, summary=summary)
+
+            # 5. Session.
+            choice = self._sessions.choose(chat_id, self._adapter.name)
+            prompt = self._build_prompt(window, choice, batch, route)
+
+            # 6. Gọi agent, vừa chạy vừa giữ ack.
             result = await self._invoke(chat_id, prompt, choice)
 
         elapsed = time.time() - started

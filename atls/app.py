@@ -40,7 +40,9 @@ class App:
     def __init__(self, cfg: Config) -> None:
         self._cfg = cfg
         self._store = Store(cfg.db_path)
-        self._adapter = build_adapter(cfg.agent, cfg.agent_cmd)
+        self._adapter = build_adapter(
+            cfg.agent, cfg.agent_cmd, skip_permissions=cfg.agent_skip_permissions
+        )
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._locks = ChatLockRegistry()
         self._sessions = SessionManager(
@@ -82,6 +84,9 @@ class App:
             ingest = build_ingest(cfg, api, self._store, self._queue)
             await ingest.start()
             self._tasks.append(asyncio.create_task(self._consume(), name="atls-consume"))
+            # Gom cả vòng nhận tin vào `gather`: nó chết mà không ai đợi thì daemon vẫn
+            # "đang chạy" trong khi không còn nghe ai nữa.
+            self._tasks.extend(ingest.background_tasks())
 
             _log.info("Alice đang nghe. %d worker, cửa sổ %s token, phiên tối đa %.0fh.",
                       cfg.workers, f"{cfg.window_tokens:,}", cfg.session_max_age / 3600)

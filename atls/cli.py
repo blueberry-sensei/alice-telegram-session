@@ -40,6 +40,26 @@ def cmd_run(args) -> int:
         print("Thiếu TELEGRAM_BOT_TOKEN. Chép .env.example thành .env rồi điền.", file=sys.stderr)
         return 2
 
+    # Cổng chat phải ĐÓNG theo mặc định. Một daemon nhận mọi chat, cộng adapter chạy
+    # `--dangerously-skip-permissions`, là một shell mở cho bất kỳ ai đoán ra username
+    # của bot. Từ chối khởi động ồn ào còn hơn chạy ngoan ngoãn trong tư thế đó.
+    if not cfg.allowed_chats and not cfg.allow_all_chats:
+        print(
+            "ATLS_ALLOWED_CHATS đang trống nên daemon không khởi động.\n\n"
+            "Bot này chạy agent CLI với quyền thật trên máy, nên nó chỉ nghe những chat\n"
+            "được ghi tên. Cách lấy id: chạy `atls run` với ATLS_ALLOW_ALL_CHATS=1 trong\n"
+            "một phòng riêng, gõ /whoami, chép id vào ATLS_ALLOWED_CHATS, rồi tắt lại.\n\n"
+            "Chấp nhận rủi ro và muốn nhận mọi chat: đặt ATLS_ALLOW_ALL_CHATS=1.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if cfg.chat_gate_is_open:
+        log.get("cli").warning(
+            "ATLS_ALLOW_ALL_CHATS=1 — BẤT KỲ ai nhắn cho bot cũng điều khiển được agent "
+            "trên máy này. Chỉ nên dùng lúc lấy chat id."
+        )
+
     lock = SingletonLock(cfg.data_dir / "daemon.lock")
     if not lock.acquire():
         print(
@@ -94,19 +114,32 @@ def cmd_doctor(args) -> int:
         line(bool(cfg.webhook_url), "ATLS_WEBHOOK_URL", cfg.webhook_url or "chưa điền")
         line(bool(cfg.webhook_secret), "ATLS_WEBHOOK_SECRET",
              "đã đặt" if cfg.webhook_secret else "TRỐNG — ai đoán được URL cũng bơm được tin giả")
-    line(bool(cfg.allowed_chats), "Danh sách chat",
-         ", ".join(sorted(cfg.allowed_chats)) if cfg.allowed_chats else "TRỐNG — nhận mọi chat")
+    if cfg.allowed_chats:
+        line(True, "Danh sách chat", ", ".join(sorted(cfg.allowed_chats)))
+    elif cfg.allow_all_chats:
+        line(False, "Danh sách chat",
+             "TRỐNG + ATLS_ALLOW_ALL_CHATS=1 — BẤT KỲ AI nhắn cho bot đều chạy được "
+             "agent trên máy này. Chỉ dùng khi đang thử.")
+    else:
+        line(False, "Danh sách chat",
+             "TRỐNG — daemon sẽ từ chối khởi động. Điền ATLS_ALLOWED_CHATS "
+             "(gõ /whoami trong chat để lấy id).")
 
     print("\nAgent CLI")
     for name, present in available_agents().items():
         marker = " ← đang dùng" if name == cfg.agent else ""
         print(f"  {'✅' if present else '·  '} {name}{marker}")
     try:
-        adapter = build_adapter(cfg.agent, cfg.agent_cmd)
+        adapter = build_adapter(cfg.agent, cfg.agent_cmd,
+                                skip_permissions=cfg.agent_skip_permissions)
         line(adapter.is_available(), f"`{cfg.agent}` chạy được",
              "" if adapter.is_available() else "không thấy trên PATH")
         line(True, "Nối tiếp session", "có" if adapter.supports_resume() else
              "không — ATLS tự dán cửa sổ hội thoại, vẫn nhớ đủ")
+        line(True, "Bỏ qua hỏi quyền",
+             "BẬT — agent chạy lệnh không hỏi lại. Kết hợp với danh sách chat ở trên "
+             "để biết ai điều khiển được nó." if cfg.agent_skip_permissions
+             else "tắt (ATLS_AGENT_SKIP_PERMISSIONS=0)")
     except ValueError as exc:
         line(False, "Cấu hình agent", str(exc))
 

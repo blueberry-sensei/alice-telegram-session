@@ -54,6 +54,15 @@ class AckGuard:
         if self._addressed:
             delay = 0.0 if self._immediate else self._after
             self._tasks.append(asyncio.create_task(self._ack_after(delay)))
+            if self._immediate:
+                # Nhường vòng lặp đúng một nhịp để task ack thật sự KHỞI ĐỘNG.
+                #
+                # `create_task` mới chỉ xếp lịch. Nếu thân `async with` chạy hết mà
+                # không lần nào treo thật sự, `__aexit__` huỷ task trước khi nó chạy
+                # dòng đầu tiên — và câu "chờ em chút" không bao giờ bay lên. Trong
+                # môi trường thật thì gọi CLI luôn treo nên chuyện này không lộ ra;
+                # tức là hành vi đúng đang phụ thuộc vào may mắn, không vào code.
+                await asyncio.sleep(0)
         return self
 
     async def __aexit__(self, *exc) -> None:

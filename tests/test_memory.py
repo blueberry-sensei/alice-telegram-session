@@ -21,12 +21,32 @@ def test_dem_token_uoc_luong_cao_hon_thuc_te():
     assert count_tokens(text) >= len(text) / 4.2
 
 
-def test_truncate_giu_phan_cuoi():
-    """Cắt phải giữ ĐUÔI: phần mới nhất mới là phần đang được hỏi."""
+def test_truncate_mac_dinh_giu_phan_dau():
+    """Mặc định giữ ĐẦU. Hai chỗ gọi đều cần vậy, và cả hai đều có lý do cụ thể:
+    tin nhắn mở đầu bằng `[Tên]: `, còn tóm tắt được viết theo thứ tự ưu tiên giảm dần."""
     text = "\n".join(f"dòng {i}" for i in range(500))
     out = truncate_to_tokens(text, 50)
     assert count_tokens(out) <= 50
+    assert "dòng 0" in out
+    assert "dòng 499" not in out
+
+
+def test_truncate_giu_phan_cuoi_khi_duoc_yeu_cau():
+    text = "\n".join(f"dòng {i}" for i in range(500))
+    out = truncate_to_tokens(text, 50, keep="tail")
+    assert count_tokens(out) <= 50
     assert "dòng 499" in out
+
+
+def test_tin_bi_cat_van_giu_ten_nguoi_noi(store: Store, chat: str):
+    """Một tin dài hơn cả cửa sổ bị cắt: phần giữ lại PHẢI còn nhãn người nói.
+
+    Giữ đuôi thì agent nhận một mảnh văn bản không đầu không cuối, không biết ai nói và
+    không biết đó là câu hỏi hay là log người ta dán vào.
+    """
+    add(store, chat, "Bệ hạ hỏi: " + "x " * 20_000, update_id=1)
+    window = build_window(store, chat, budget=300)
+    assert window.messages[0].text.startswith("[Bệ hạ]:")
 
 
 def test_cua_so_luon_nam_trong_budget(store: Store, chat: str):
@@ -83,10 +103,43 @@ def test_raw_tokens_dem_dung_phan_ngoai_vung_nen(store: Store, chat: str):
 
     store.add_summary(chat_id=chat, from_msg_id=ids[0], to_msg_id=ids[19],
                       covered=20, text="…", tokens=10)
-    after, raw = raw_tokens_since_summary(store, chat)
+    after, count = raw_tokens_since_summary(store, chat)
 
-    assert len(raw) == 20
+    assert count == 20
     assert after < before
+
+
+def test_tin_hieu_kich_hoat_nen_khong_bao_hoa_o_tran_doc(store: Store, chat: str):
+    """Đếm vùng chưa nén bằng SQL, KHÔNG qua truy vấn có LIMIT.
+
+    Nếu nó đếm qua một truy vấn `LIMIT 2000` thì đúng lúc hệ thống tụt lại xa nhất
+    (nén hỏng nhiều lượt liền) lại là lúc chỉ số ngừng tăng.
+    """
+    for i in range(2_100):
+        add(store, chat, "x", update_id=i)
+    _, count = raw_tokens_since_summary(store, chat)
+    assert count == 2_100
+
+
+def test_cua_so_giu_tin_moi_nhat_ke_ca_khi_vung_chua_nen_vuot_tran_doc(
+    store: Store, chat: str, monkeypatch
+):
+    """Vùng chưa nén lớn hơn trần đọc → vẫn phải thấy câu hỏi mới nhất.
+
+    Đây là hồi quy cho một lỗi câm: trần đọc từng đặt trên `ORDER BY id ASC`, nên khi
+    nén hỏng nhiều lượt liền (agent CLI chết) thì cửa sổ được dựng từ khúc CŨ NHẤT và
+    câu người ta vừa gõ không có trong prompt. Agent trả lời câu hỏi của hôm kia, rất
+    tự tin, và không có gì trong log nói rằng chuyện đó vừa xảy ra.
+    """
+    from atls.memory import window as mod
+    monkeypatch.setattr(mod, "_MAX_ROWS", 10)
+
+    for i in range(40):
+        add(store, chat, f"tin số {i}", update_id=i)
+
+    texts = [m.text for m in build_window(store, chat, budget=20_000).messages]
+    assert "tin số 39" in texts, "câu hỏi mới nhất KHÔNG BAO GIỜ được rơi khỏi cửa sổ"
+    assert "tin số 0" not in texts
 
 
 # ── compactor ────────────────────────────────────────────────────────────────
@@ -143,6 +196,33 @@ async def test_nen_hong_khong_lam_chet_luot(store: Store, chat: str):
     assert await comp.maybe_compact(chat) is None
     # Cửa sổ vẫn dựng được, chỉ là cắt cứng.
     assert build_window(store, chat, budget=500).tokens <= 500
+
+
+async def test_nen_tien_len_duoc_ke_ca_khi_vung_chua_nen_rat_lon(store: Store, chat: str):
+    """Nén hỏng nhiều lượt → vùng chưa nén phình qua một lô. Mỗi lượt vẫn phải TIẾN LÊN.
+
+    Và không được để hở: `keep_raw` tin cuối phải tính trên tổng số tin thật, không
+    phải trên độ dài của lô vừa đọc — tính nhầm thì có một dải tin ở giữa vĩnh viễn
+    không được nén mà cũng không còn nằm trong cửa sổ.
+    """
+    from atls.memory import compactor as mod
+    original = mod.COMPACT_BATCH
+    mod.COMPACT_BATCH = 20
+    try:
+        for i in range(100):
+            add(store, chat, f"tin số {i} đủ dài để vượt ngưỡng nén", update_id=i)
+        comp = _compactor(store, keep_raw=5)
+
+        first = await comp.maybe_compact(chat)
+        assert first is not None and first.covered == 20
+
+        second = await comp.maybe_compact(chat)
+        assert second is not None
+        # Liền mạch: bản sau bắt đầu đúng chỗ bản trước dừng, không hở không chồng.
+        assert second.to_msg_id == first.to_msg_id + 20
+        assert second.covered == 40
+    finally:
+        mod.COMPACT_BATCH = original
 
 
 async def test_khong_nen_khi_chua_vuot_nguong(store: Store, chat: str):

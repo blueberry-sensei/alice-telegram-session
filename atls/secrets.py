@@ -20,9 +20,14 @@ MASK = "«đã che»"
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # Telegram bot token: 8-10 chữ số : 35 ký tự base64url
     ("telegram-token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{30,}\b")),
-    # OpenAI / Anthropic / GitHub / Slack
-    ("api-key", re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}\b")),
+    # OpenAI / Anthropic / GitHub / Slack.
+    #
+    # `anthropic-key` PHẢI đứng trước `api-key`: `sk-ant-…` khớp cả hai, và mẫu chạy
+    # trước là mẫu thắng. Đảo thứ tự thì luật anthropic thành code chết và mọi khoá
+    # Anthropic bị dán nhãn "api-key" — vẫn che được, nhưng ta mất khả năng nói đúng
+    # thứ vừa che là gì, mà đó là điểm duy nhất của việc gắn nhãn.
     ("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}\b")),
+    ("api-key", re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}\b")),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b")),
     ("slack-token", re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}\b")),
     ("google-key", re.compile(r"\bAIza[A-Za-z0-9_-]{30,}\b")),

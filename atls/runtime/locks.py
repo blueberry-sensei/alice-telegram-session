@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -34,16 +35,28 @@ HEARTBEAT_SECONDS = 30
 
 
 class SingletonLock:
-    """Một daemon một máy. Dùng PID để phân biệt khoá chết với khoá đang sống."""
+    """Một daemon một máy. Dùng PID **và** nhịp tim để phân biệt khoá chết với khoá sống.
+
+    Chỉ PID là chưa đủ, vì hệ điều hành tái dùng PID — Windows rất nhanh. Máy sập, khởi
+    động lại, một tiến trình bất kỳ nhận đúng con số PID cũ, và `os.kill(pid, 0)` bảo
+    "còn sống". Daemon thật thì không bao giờ khởi động lại được nữa, thông báo lỗi thì
+    chỉ đường đi xoá file lock bằng tay — đúng thứ lớp khoá này sinh ra để khỏi phải làm.
+
+    Nên chủ khoá **chạm mtime** đều đặn suốt đời nó. Chạm bằng thread chứ không bằng
+    asyncio: `acquire()` được gọi trước khi có event loop nào (`cmd_run` gọi nó rồi mới
+    tới `asyncio.run`), và một daemon thread thì không giữ tiến trình sống thêm lúc thoát.
+    """
 
     def __init__(self, path: Path) -> None:
         self._path = path
         self._held = False
+        self._stop = threading.Event()
+        self._beat: threading.Thread | None = None
 
     def acquire(self) -> bool:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         if self._path.exists():
-            if self._alive():
+            if self._alive() and not self._ancient():
                 return False
             _log.warning("dọn lock daemon mồ côi: %s", self._path)
             self._path.unlink(missing_ok=True)
@@ -54,7 +67,28 @@ class SingletonLock:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(f"{os.getpid()}\n{time.time()}\n")
         self._held = True
+        self._stop.clear()
+        self._beat = threading.Thread(target=self._heartbeat, daemon=True, name="atls-lock-beat")
+        self._beat.start()
         return True
+
+    def _heartbeat(self) -> None:
+        while not self._stop.wait(HEARTBEAT_SECONDS):
+            try:
+                self._path.touch()
+            except OSError:
+                return
+
+    def _ancient(self) -> bool:
+        """Khoá quá cũ so với nhịp tim → chủ của nó không còn chạm nó nữa.
+
+        Đây là thứ phá được thế kẹt PID-tái-dùng: tiến trình mượn PID không biết gì về
+        file này nên không bao giờ chạm nó.
+        """
+        try:
+            return (time.time() - self._path.stat().st_mtime) > STALE_SECONDS
+        except OSError:
+            return True
 
     def _alive(self) -> bool:
         """PID trong file còn sống không? Không đọc được thì coi là CHẾT — thà nhận
@@ -78,6 +112,7 @@ class SingletonLock:
 
     def release(self) -> None:
         if self._held:
+            self._stop.set()
             self._path.unlink(missing_ok=True)
             self._held = False
 

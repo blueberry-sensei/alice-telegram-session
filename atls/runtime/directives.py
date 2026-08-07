@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from atls import log
 
@@ -66,14 +66,49 @@ def extract(text: str) -> tuple[str, list[Directive]]:
         name = match.group(1)
         if name not in KNOWN:
             return match.group(0)
+        # Giữ NGUYÊN vị trí, kể cả tham số rỗng. Lọc rỗng đi thì `[[SEND_PDF: | tiêu đề]]`
+        # biến thành `args=["tiêu đề"]` và "tiêu đề" bị đọc thành đường dẫn file.
         args = [p.strip() for p in match.group(2).split("|")]
-        found.append(Directive(name=name, args=[a for a in args if a] or [""]))
+        found.append(Directive(name=name, args=args or [""]))
         return ""
 
     cleaned = PATTERN.sub(take, text)
     # Bóc chỉ thị để lại dòng trống; gom lại để tin nhắn không có khoảng hở kỳ lạ.
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned, found
+
+
+# Thư mục cấm, dù nằm trong gốc hợp lệ.
+_DENY_DIRS = frozenset({
+    ".git", ".venv", "venv", "node_modules", ".ssh", ".aws", ".gnupg", ".claude",
+})
+
+# Tên file cấm, dù nằm trong gốc hợp lệ. Khớp theo glob trên TÊN, không theo đường dẫn.
+_DENY_GLOBS = (
+    ".env", ".env.*", "*.env",
+    "*.db", "*.db-wal", "*.db-shm", "*.sqlite", "*.sqlite3",
+    "*.pem", "*.key", "*.pfx", "*.p12", "*.kdbx",
+    "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
+    "*.lock", ".netrc", ".npmrc", ".pypirc", "credentials", "credentials.*",
+)
+
+
+def forbidden_reason(path: Path) -> str:
+    """Đường dẫn nằm ĐÚNG trong gốc cho phép nhưng vẫn không được gửi? Vì sao.
+
+    Chỉ chặn "đi ra ngoài thư mục" là chưa đủ, vì thứ đắt giá nhất lại nằm NGAY TRONG
+    thư mục cho phép: `atls.db` là toàn bộ lịch sử chat vĩnh viễn của mọi phòng, và
+    `.env` chứa bot token. Một lời nhắn kiểu "gửi anh file atls.db để anh kiểm tra" là
+    đủ để lấy sạch — không cần `../` nào cả, mà `../` mới là thứ duy nhất được canh.
+    """
+    for part in path.parts:
+        if part.lower() in _DENY_DIRS:
+            return f"`{part}` là thư mục nhạy cảm"
+    name = path.name.lower()
+    for glob in _DENY_GLOBS:
+        if PurePath(name).match(glob):
+            return f"`{path.name}` thuộc nhóm file nhạy cảm (khớp `{glob}`)"
+    return ""
 
 
 def resolve_path(raw: str, *, roots: list[Path]) -> Path | None:
@@ -99,8 +134,13 @@ class DirectiveRunner:
         self._api = api
         self._store = store
         self._cfg = cfg
-        # Hai gốc hợp lệ: nơi agent làm việc, và nơi ATLS để file. Không có gốc thứ ba.
-        self._roots = [cfg.agent_cwd, cfg.data_dir]
+        # Gốc hợp lệ: nơi agent làm việc, và hai thư mục trao đổi file của ATLS.
+        #
+        # KHÔNG phải cả `data_dir`: trong đó có `atls.db` và `logs/`. Thu hẹp xuống
+        # `inbox`/`outbox` là tầng phòng thủ thứ nhất, `forbidden_reason` là tầng thứ
+        # hai (cần cả hai, vì `agent_cwd` do người dùng đặt và rất có thể là repo có
+        # `.env` nằm ngay gốc).
+        self._roots = [cfg.agent_cwd, cfg.inbox_dir, cfg.outbox_dir]
 
     async def run_all(self, chat_id: str, directives: list[Directive]) -> None:
         for d in directives:
@@ -123,8 +163,14 @@ class DirectiveRunner:
                 f"đường dẫn `{d.arg(0)}` nằm ngoài thư mục cho phép "
                 f"({', '.join(str(r) for r in self._roots)})"
             )
+        if reason := forbidden_reason(path):
+            raise ValueError(f"không gửi được: {reason}")
         if d.name == "SEND_PDF":
             path = self._render_pdf(path, title=d.arg(1))
+            # PDF vừa dựng nằm trong outbox, nhưng nguồn có thể là file cấm — kiểm lại
+            # sau khi đổi đường dẫn, đừng tin lần kiểm trước còn đúng.
+            if reason := forbidden_reason(path):
+                raise ValueError(f"không gửi được: {reason}")
         if not path.exists():
             raise FileNotFoundError(f"không có file `{path.name}`")
         size = path.stat().st_size

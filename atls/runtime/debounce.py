@@ -68,7 +68,13 @@ class Debouncer:
         await self._fire(chat)
 
     async def _fire(self, chat: str) -> None:
-        if timer := self._timers.pop(chat, None):
+        timer = self._timers.pop(chat, None)
+        # `is not current_task()` là bắt buộc: `_fire` được gọi TỪ `_countdown`, nên
+        # `timer` chính là task đang chạy dòng này. Huỷ nó = tự huỷ mình, và
+        # `CancelledError` sẽ nổ ở điểm `await` đầu tiên bên trong `_flush` — chùm tin
+        # biến mất, không log, không ai biết. Hôm nay `_flush` tình cờ không await lần
+        # nào nên chưa lộ; đó là mìn chờ chứ không phải an toàn.
+        if timer is not None and timer is not asyncio.current_task():
             timer.cancel()
         batch = self._buffers.pop(chat, [])
         self._first_seen.pop(chat, None)

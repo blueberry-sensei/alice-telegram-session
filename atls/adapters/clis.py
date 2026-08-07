@@ -28,6 +28,14 @@ class ClaudeAdapter(SubprocessAdapter):
     name = "claude"
     executable = "claude"
 
+    def __init__(self, skip_permissions: bool = True) -> None:
+        # Có cờ tắt là điều kiện để `--dangerously-skip-permissions` được phép tồn tại.
+        # Nó là thứ biến "một tin nhắn Telegram" thành "một lệnh chạy trên máy chủ", và
+        # một tuỳ chọn nguy hiểm mà không có đường tắt thì không phải quyết định thiết
+        # kế, chỉ là hardcode. Mặc định vẫn bật vì cả sản phẩm dựa trên việc agent làm
+        # được việc thật; ai chạy ở nơi không tin được thì tắt.
+        self._skip_permissions = skip_permissions
+
     def supports_resume(self) -> bool:
         return True
 
@@ -37,7 +45,7 @@ class ClaudeAdapter(SubprocessAdapter):
     def build_command(self, req: AgentRequest) -> list[str]:
         cmd = [
             self.executable, "--print",
-            "--dangerously-skip-permissions",
+            *(["--dangerously-skip-permissions"] if self._skip_permissions else []),
             *(["--resume", req.session_id] if req.resume else ["--session-id", req.session_id]),
         ]
         if req.model:
@@ -184,7 +192,7 @@ REGISTRY = {
 }
 
 
-def build_adapter(kind: str, template: str = ""):
+def build_adapter(kind: str, template: str = "", *, skip_permissions: bool = True):
     kind = (kind or "claude").lower()
     if kind == "antigravity":
         return AntigravityAdapter(template)
@@ -198,6 +206,8 @@ def build_adapter(kind: str, template: str = ""):
             f"Không biết agent '{kind}'. Chọn: {', '.join(sorted(REGISTRY))}, "
             "antigravity, custom."
         )
+    if cls is ClaudeAdapter:
+        return cls(skip_permissions=skip_permissions)
     return cls()
 
 

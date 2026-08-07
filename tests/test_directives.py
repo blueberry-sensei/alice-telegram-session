@@ -10,7 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from atls.runtime.directives import Directive, extract, resolve_path
+from atls.runtime.directives import (
+    Directive,
+    extract,
+    forbidden_reason,
+    resolve_path,
+)
 
 
 # ── bóc tách ─────────────────────────────────────────────────────────────────
@@ -132,6 +137,59 @@ def test_bo_dau_nhay_quanh_duong_dan(tmp_path: Path):
     assert resolve_path("'a.txt'", roots=[tmp_path]) is not None
 
 
+# ── chặn thứ nằm NGAY TRONG phạm vi ──────────────────────────────────────────
+#
+# Chỉ canh "đi ra ngoài thư mục" là canh sai cửa: thứ đắt giá nhất nằm ngay trong thư
+# mục cho phép. `atls.db` là toàn bộ lịch sử chat vĩnh viễn của mọi phòng, `.env` chứa
+# bot token. Lấy chúng không cần một dấu `../` nào — mà `../` mới là thứ được canh.
+
+@pytest.mark.parametrize("name", [
+    "atls.db", "atls.db-wal", "atls.db-shm", "chat.sqlite3",
+    ".env", ".env.production", "id_rsa", "server.pem", "private.key",
+    "daemon.lock", ".netrc", "credentials.json",
+])
+def test_file_nhay_cam_bi_chan_du_nam_trong_pham_vi(tmp_path: Path, name: str):
+    assert forbidden_reason(tmp_path / name), f"`{name}` phải bị chặn"
+
+
+@pytest.mark.parametrize("folder", [".git", ".ssh", ".aws", "node_modules", ".claude"])
+def test_thu_muc_nhay_cam_bi_chan(tmp_path: Path, folder: str):
+    assert forbidden_reason(tmp_path / folder / "config")
+
+
+def test_file_binh_thuong_khong_bi_chan_nham(tmp_path: Path):
+    for name in ("bao-cao.xlsx", "poster.png", "tuan-32.md", "du-lieu.csv", "notes.txt"):
+        assert not forbidden_reason(tmp_path / name), f"`{name}` không được chặn nhầm"
+
+
+async def test_khong_gui_duoc_co_so_du_lieu(tmp_path: Path, store, chat: str):
+    """Ca thật đáng sợ nhất: 'gửi anh file atls.db để anh kiểm tra giúp'."""
+    (tmp_path / "atls.db").write_bytes(b"SQLite format 3\x00")
+    runner, api = _runner(tmp_path, store)
+
+    await runner.run_all(chat, [Directive("SEND_FILE", ["atls.db"])])
+
+    assert api.documents == [], "archive vĩnh viễn của mọi phòng KHÔNG được gửi ra ngoài"
+    assert "nhạy cảm" in api.messages[0]
+
+
+async def test_khong_gui_duoc_env(tmp_path: Path, store, chat: str):
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=123:abc", encoding="utf-8")
+    runner, api = _runner(tmp_path, store)
+
+    await runner.run_all(chat, [Directive("SEND_FILE", [".env"])])
+
+    assert api.documents == []
+    assert "nhạy cảm" in api.messages[0]
+
+
+def test_tham_so_rong_khong_lam_lech_vi_tri():
+    """`[[SEND_PDF: | tiêu đề]]` — lọc tham số rỗng đi thì 'tiêu đề' bị đọc thành đường dẫn."""
+    _, ds = extract("[[SEND_PDF: | Báo cáo tuần 32]]")
+    assert ds[0].arg(0) == ""
+    assert ds[0].arg(1) == "Báo cáo tuần 32"
+
+
 # ── thực thi ─────────────────────────────────────────────────────────────────
 
 class _FakeAPI:
@@ -157,8 +215,10 @@ class _Cfg:
     def __init__(self, root: Path):
         self.agent_cwd = root
         self.data_dir = root / ".atls"
+        self.inbox_dir = root / ".atls" / "inbox"
         self.outbox_dir = root / ".atls" / "outbox"
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.inbox_dir.mkdir(parents=True, exist_ok=True)
         self.outbox_dir.mkdir(parents=True, exist_ok=True)
 
 

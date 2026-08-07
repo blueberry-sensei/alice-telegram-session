@@ -9,6 +9,7 @@ sau đều phải biết cả sáu. Ép về một `Incoming` ở đây, một l
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # Thứ tự có ý nghĩa: `edited_*` đứng sau bản gốc để khi cả hai cùng có (không xảy ra
@@ -20,6 +21,14 @@ _MESSAGE_KEYS = (
     "edited_message",
     "edited_channel_post",
 )
+
+# Một lệnh THẬT: `/tên` hoặc `/tên@bot`, rồi hết dòng hoặc khoảng trắng.
+#
+# `[^\s@/]+` (cấm cả dấu `/`) là chỗ dễ bỏ sót nhất: thiếu nó thì `/home/user/log.txt`
+# — một đường dẫn ai đó dán vào group — được coi là lệnh `/home/user/log.txt` và đánh
+# thức agent. Lớp ký tự này cũng cố ý KHÔNG giới hạn về ASCII, vì `/nhớ` là lệnh thật
+# của ATLS còn Telegram thì chỉ gắn entity `bot_command` cho lệnh ASCII.
+_COMMAND = re.compile(r"^/(?P<name>[^\s@/]+)(?:@(?P<target>[A-Za-z0-9_]+))?(?:\s|$)")
 
 _MEDIA_KEYS = (
     ("photo", "ảnh"),
@@ -48,25 +57,53 @@ class Incoming:
     reply_to_id: int | None
     reply_to_text: str
     reply_to_is_bot: bool
+    reply_to_username: str = ""
     entities: list[dict] = field(default_factory=list)
     media: dict | None = None
     edited: bool = False
 
     @property
     def is_command(self) -> bool:
-        return self.text.startswith("/")
+        return bool(_COMMAND.match(self.text))
 
     def command(self) -> tuple[str, str]:
         """Tách `/lệnh@bot tham số` thành `("lệnh", "tham số")`. Không phải lệnh → `("", "")`."""
-        if not self.is_command:
+        m = _COMMAND.match(self.text)
+        if not m:
             return "", ""
-        head, _, rest = self.text.partition(" ")
-        return head[1:].split("@")[0].lower(), rest.strip()
+        return m.group("name").lower(), self.text[m.end():].strip()
+
+    def command_target(self) -> str:
+        """Phần `@bot` trong `/lệnh@bot`, thường rỗng.
+
+        Trong group nhiều bot, đây là cách DUY NHẤT biết lệnh dành cho ai. Bỏ qua nó
+        thì `/poll@othersbot` cũng đánh thức ta.
+        """
+        m = _COMMAND.match(self.text)
+        return (m.group("target") or "").lower() if m else ""
+
+    def command_is_for(self, bot_username: str) -> bool:
+        """Lệnh không ghi đích thì coi như dành cho mọi bot trong phòng — kể cả ta."""
+        target = self.command_target()
+        return not target or target == (bot_username or "").lower()
 
     def mentions(self, bot_username: str) -> bool:
         if not bot_username:
             return False
         return f"@{bot_username}".lower() in self.text.lower()
+
+    def replies_to(self, bot_username: str) -> bool:
+        """Reply vào tin của CHÍNH bot này, không phải một bot bất kỳ.
+
+        `reply_to_is_bot` đơn thuần là sai trong group có từ hai bot: người ta reply
+        vào tin của bot kia và ta nhảy vào trả lời — đúng kiểu lắm lời khiến bot bị tắt.
+        Chỉ khi Telegram không cho biết username (hiếm) mới rơi về cờ chung.
+        """
+        if not self.reply_to_is_bot:
+            return False
+        if not self.reply_to_username or not bot_username:
+            return True
+        return self.reply_to_username.lower() == bot_username.lower()
 
 
 def _sender_name(user: dict) -> str:
@@ -142,6 +179,7 @@ def parse_update(update: dict) -> Incoming | None:
         reply_to_id=int(reply["message_id"]) if reply.get("message_id") else None,
         reply_to_text=(reply.get("text") or reply.get("caption") or "").strip(),
         reply_to_is_bot=bool((reply.get("from") or {}).get("is_bot")),
+        reply_to_username=str((reply.get("from") or {}).get("username") or ""),
         entities=list(msg.get("entities") or msg.get("caption_entities") or []),
         media=_extract_media(msg),
         edited=edited,

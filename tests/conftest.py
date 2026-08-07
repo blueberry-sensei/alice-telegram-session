@@ -27,6 +27,7 @@ def make_update(
     update_id: int, text: str, *, chat_id: str = "-100200",
     chat_type: str = "supergroup", sender: str = "Bệ hạ", sender_id: int = 7,
     is_bot: bool = False, reply_to: dict | None = None, entities: list | None = None,
+    edited: bool = False,
 ) -> dict:
     msg = {
         "message_id": update_id * 10,
@@ -39,7 +40,7 @@ def make_update(
         msg["reply_to_message"] = reply_to
     if entities:
         msg["entities"] = entities
-    return {"update_id": update_id, "message": msg}
+    return {"update_id": update_id, "edited_message" if edited else "message": msg}
 
 
 def add(store: Store, chat_id: str, text: str, *, role: str = "human",
@@ -50,8 +51,12 @@ def add(store: Store, chat_id: str, text: str, *, role: str = "human",
     )
 
 
-def bot_reply(message_id: int = 999) -> dict:
-    return {"message_id": message_id, "from": {"id": 1, "is_bot": True}, "text": "dạ"}
+def bot_reply(message_id: int = 999, username: str = "alice_bot") -> dict:
+    """Tin của bot để reply vào. `username` là cách phân biệt bot MÌNH với bot khác."""
+    who = {"id": 1, "is_bot": True}
+    if username:
+        who["username"] = username
+    return {"message_id": message_id, "from": who, "text": "dạ"}
 
 
 __all__ = ["make_update", "add", "bot_reply", "parse_update"]

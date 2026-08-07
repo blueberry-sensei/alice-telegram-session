@@ -63,14 +63,39 @@ def classify(msg: Incoming, bot_username: str, triggers: tuple[str, ...] = ()) -
     if not msg.text and not msg.media:
         return Route(Decision.IGNORE, "tin rỗng")
 
+    # Tin đã sửa: vào archive, KHÔNG đánh thức agent.
+    #
+    # Telegram cấp `update_id` mới cho mỗi lần sửa, nên nếu để nó đi tiếp thì một người
+    # sửa lỗi chính tả sẽ nhận câu trả lời thứ hai cho cùng một câu hỏi. Cái giá là
+    # người ta sửa tin để BỔ SUNG "@alice" thì ta không thấy — đổi lại đúng, vì gõ một
+    # tin mới là chuyện một giây, còn trả lời hai lần thì không rút lại được.
+    if msg.edited:
+        return Route(Decision.BACKGROUND, "tin đã sửa")
+
+    answered = _answer_route(msg, bot_username, triggers)
+
     if msg.is_command:
         cmd, args = msg.command()
+        if not msg.command_is_for(bot_username):
+            # `/poll@bot_khac` — người ta đang nói với bot khác trong cùng phòng.
+            return Route(Decision.BACKGROUND, f"lệnh /{cmd} gửi cho @{msg.command_target()}")
         if cmd in SYSTEM_COMMANDS:
             return Route(Decision.COMMAND, f"/{cmd}", addressed=True, command=cmd, args=args)
-        # Lệnh lạ vẫn là gọi thẳng — agent tự hiểu người dùng muốn gì.
-        return Route(Decision.ANSWER, f"lệnh /{cmd}", addressed=True,
-                     likely_long=_likely_long(msg.text))
+        # Lệnh lạ trong chat riêng, hoặc lệnh ghi rõ `@bot_ta`, hoặc kèm @mention/reply:
+        # rõ ràng là gọi ta → để agent tự hiểu người dùng muốn gì.
+        if msg.chat_kind == "private" or msg.command_target() or answered:
+            return Route(Decision.ANSWER, f"lệnh /{cmd}", addressed=True,
+                         likely_long=_likely_long(msg.text))
+        # Lệnh lạ, không đích, trong group: KHÔNG đánh thức agent. Một group thật có
+        # nhiều bot và `/deploy` rất có thể là của bot khác — đánh thức nhầm thì tốn
+        # một lượt CLI thật và một câu trả lời chen ngang.
+        return Route(Decision.BACKGROUND, f"lệnh /{cmd} không ghi đích trong group")
 
+    return answered or Route(Decision.BACKGROUND, "không gọi thẳng agent")
+
+
+def _answer_route(msg: Incoming, bot_username: str, triggers: tuple[str, ...]) -> Route | None:
+    """Tin này có gọi thẳng ta không, bỏ qua chuyện nó có phải lệnh hay không."""
     # Chat riêng: mọi tin đều dành cho agent. Không có ai khác trong phòng để nói cùng.
     if msg.chat_kind == "private":
         return Route(Decision.ANSWER, "chat riêng", addressed=True,
@@ -80,7 +105,7 @@ def classify(msg: Incoming, bot_username: str, triggers: tuple[str, ...] = ()) -
         return Route(Decision.ANSWER, "được @mention", addressed=True,
                      likely_long=_likely_long(msg.text))
 
-    if msg.reply_to_is_bot:
+    if msg.replies_to(bot_username):
         return Route(Decision.ANSWER, "reply vào tin của agent", addressed=True,
                      likely_long=_likely_long(msg.text))
 
@@ -89,8 +114,7 @@ def classify(msg: Incoming, bot_username: str, triggers: tuple[str, ...] = ()) -
         if trigger and trigger in low:
             return Route(Decision.ANSWER, f"trigger '{trigger}'", addressed=True,
                          likely_long=_likely_long(msg.text))
-
-    return Route(Decision.BACKGROUND, "không gọi thẳng agent")
+    return None
 
 
 def _likely_long(text: str) -> bool:

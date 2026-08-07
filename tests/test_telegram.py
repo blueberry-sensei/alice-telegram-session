@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import bot_reply, make_update
 
 from atls.telegram.api import MAX_CHARS, md_to_html, split_message
@@ -62,6 +63,101 @@ def test_tach_lenh():
 
     inc = parse_update(make_update(2, "/status@alice_bot"))
     assert inc.command() == ("status", "")
+
+
+def test_duong_dan_khong_bi_nham_la_lenh():
+    """`/home/user/log.txt` dán vào group từng được đọc thành lệnh `/home/user/log.txt`."""
+    inc = parse_update(make_update(1, "/var/log/nginx/error.log"))
+    assert not inc.is_command
+    assert inc.command() == ("", "")
+
+
+def test_dich_cua_lenh():
+    assert parse_update(make_update(1, "/poll@bot_khac ăn gì")).command_target() == "bot_khac"
+    assert parse_update(make_update(2, "/status")).command_target() == ""
+
+    inc = parse_update(make_update(3, "/status@bot_khac"))
+    assert not inc.command_is_for("alice_bot")
+    assert parse_update(make_update(4, "/status")).command_is_for("alice_bot")
+
+
+def test_replies_to_phan_biet_bot_minh_voi_bot_khac():
+    ours = parse_update(make_update(1, "vậy à", reply_to=bot_reply(username="alice_bot")))
+    theirs = parse_update(make_update(2, "vậy à", reply_to=bot_reply(username="bot_khac")))
+    assert ours.replies_to("alice_bot")
+    assert not theirs.replies_to("alice_bot")
+
+
+def test_parse_tin_da_sua_duoc_danh_dau():
+    inc = parse_update(make_update(1, "sửa lại chút", edited=True))
+    assert inc is not None and inc.edited
+
+
+# ── chống chết câm ───────────────────────────────────────────────────────────
+
+class _FakeResponse:
+    def __init__(self, status: int, body: str):
+        self.status = status
+        self._body = body
+
+    async def text(self) -> str:
+        return self._body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeSession:
+    """Trả lần lượt các phản hồi đã dựng sẵn, đếm số lần bị gọi."""
+
+    def __init__(self, *responses):
+        self._queue = list(responses)
+        self.calls = 0
+
+    def post(self, url, **kw):
+        self.calls += 1
+        return self._queue.pop(0) if self._queue else _FakeResponse(200, '{"ok":true,"result":1}')
+
+
+@pytest.fixture()
+def no_backoff(monkeypatch):
+    """Bỏ thời gian chờ giữa các lần thử. Giữ tham chiếu hàm GỐC trước khi vá —
+    `lambda: asyncio.sleep(0)` tự gọi chính bản đã vá và đệ quy tới chết."""
+    import asyncio
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
+
+
+async def test_phan_hoi_khong_phai_json_duoc_thu_lai_chu_khong_no(no_backoff):
+    """502 từ CDN trả HTML thay cho Bot API.
+
+    Trước đây `resp.json()` ném `JSONDecodeError` xuyên qua mọi lớp bắt lỗi rồi giết
+    vòng long-poll. Daemon còn sống, còn ghi log khởi động, mà điếc vĩnh viễn — kiểu
+    hỏng tệ hơn chết, vì service manager không dựng lại cái còn sống.
+    """
+    from atls.telegram.api import TelegramAPI
+
+    api = TelegramAPI("123:abc")
+    api._session = _FakeSession(
+        _FakeResponse(502, "<html>Bad gateway</html>"),
+        _FakeResponse(200, '{"ok":true,"result":{"username":"alice_bot"}}'),
+    )
+
+    assert await api.call("getMe") == {"username": "alice_bot"}
+    assert api._session.calls == 2, "phải thử lại, không được coi là lỗi cứng"
+
+
+async def test_phan_hoi_hong_mai_thi_bao_loi_ro_rang(no_backoff):
+    from atls.telegram.api import TelegramAPI, TelegramError
+
+    api = TelegramAPI("123:abc")
+    api._session = _FakeSession(*[_FakeResponse(502, "<html>nope</html>") for _ in range(5)])
+
+    with pytest.raises(TelegramError, match="không phải JSON"):
+        await api.call("getMe")
 
 
 # ── cắt tin ──────────────────────────────────────────────────────────────────

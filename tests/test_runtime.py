@@ -7,13 +7,19 @@ làm việc và không biết gì về nhau". Các test dưới đây là bằng
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 import pytest
 from conftest import make_update
 
 from atls.runtime.debounce import Debouncer
-from atls.runtime.locks import ChatLockRegistry, ResourceLock, SingletonLock
+from atls.runtime.locks import (
+    STALE_SECONDS,
+    ChatLockRegistry,
+    ResourceLock,
+    SingletonLock,
+)
 from atls.telegram.model import parse_update
 
 
@@ -88,6 +94,26 @@ async def test_moi_chat_co_dong_ho_rieng():
     assert seen == {"-1": 1, "-2": 1}
 
 
+async def test_chum_tin_khong_mat_khi_flush_co_await():
+    """`_fire` được gọi TỪ task đếm ngược, nên nó không được huỷ chính task đó.
+
+    Huỷ chính mình thì `CancelledError` nổ ở điểm `await` đầu tiên bên trong `_flush`
+    và cả chùm biến mất — không log, không ai biết. Bản cũ chỉ tình cờ không lộ vì
+    `_flush` không await lần nào; test này canh đúng cái tình cờ đó.
+    """
+    got: list = []
+
+    async def flush(chat_id, batch):
+        await asyncio.sleep(0.01)     # điểm huỷ, nếu có ai đó huỷ
+        got.extend(batch)
+
+    d = Debouncer(0.05, 5.0, flush)
+    await d.add(msg(1))
+    await asyncio.sleep(0.3)
+
+    assert len(got) == 1, "chùm tin bị nuốt vì debouncer tự huỷ chính nó"
+
+
 async def test_flush_all_khong_mat_tin_dang_cho():
     """Tắt máy trong lúc còn tin trong bộ đệm."""
     got: list = []
@@ -156,6 +182,37 @@ def test_singleton_don_lock_mo_coi(tmp_path):
     path.write_text("999999\n0\n", encoding="utf-8")  # PID gần như chắc chắn không tồn tại
 
     assert SingletonLock(path).acquire(), "lock mồ côi phải được dọn, không thì không khởi động lại được"
+
+
+def test_singleton_khong_ket_vinh_vien_vi_pid_bi_tai_dung(tmp_path):
+    """PID được hệ điều hành tái dùng — Windows rất nhanh.
+
+    Máy sập, khởi động lại, một tiến trình bất kỳ nhận đúng con số PID cũ, và
+    `os.kill(pid, 0)` bảo "còn sống". Chỉ dựa vào PID thì daemon thật không bao giờ
+    khởi động lại được, và thông báo lỗi chỉ đường đi xoá lock bằng tay — đúng thứ lớp
+    khoá này sinh ra để khỏi phải làm. Nhịp tim phá được thế kẹt đó: tiến trình mượn
+    PID không biết gì về file lock nên không bao giờ chạm nó.
+    """
+    path = tmp_path / "daemon.lock"
+    # PID của CHÍNH tiến trình test: chắc chắn "còn sống" dưới mắt `os.kill(pid, 0)`.
+    path.write_text(f"{os.getpid()}\n0\n", encoding="utf-8")
+    old = time.time() - (STALE_SECONDS + 60)
+    os.utime(path, (old, old))
+
+    lock = SingletonLock(path)
+    assert lock.acquire(), "lock cũ không còn nhịp tim thì phải giành lại được"
+    lock.release()
+
+
+def test_singleton_khong_cuop_lock_con_nhip_tim(tmp_path):
+    path = tmp_path / "daemon.lock"
+    first = SingletonLock(path)
+    assert first.acquire()
+    try:
+        # mtime mới → chủ còn sống → không ai được cướp, dù PID có trùng ai đi nữa.
+        assert not SingletonLock(path).acquire()
+    finally:
+        first.release()
 
 
 async def test_resource_lock_loai_tru_lan_nhau(tmp_path):

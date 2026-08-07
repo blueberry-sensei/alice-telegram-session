@@ -179,7 +179,11 @@ class Store:
         )
 
     def messages_after(self, chat_id: str, after_id: int, limit: int = 500) -> list[StoredMessage]:
-        """Tin có `id > after_id`, thứ tự CŨ → MỚI."""
+        """`limit` tin CŨ NHẤT có `id > after_id`, thứ tự CŨ → MỚI.
+
+        Dùng cho compaction: nén bao giờ cũng bắt đầu từ đầu vùng chưa nén.
+        Dựng cửa sổ hội thoại thì PHẢI dùng `messages_after_tail` — xem docstring ở đó.
+        """
         with self._lock:
             rows = self._conn.execute(
                 """SELECT * FROM messages WHERE chat_id = ? AND id > ?
@@ -187,6 +191,38 @@ class Store:
                 (chat_id, after_id, limit),
             ).fetchall()
         return [self._row_to_message(r) for r in rows]
+
+    def messages_after_tail(self, chat_id: str, after_id: int, limit: int) -> list[StoredMessage]:
+        """`limit` tin MỚI NHẤT có `id > after_id`, trả về thứ tự CŨ → MỚI.
+
+        Vì sao phải có hàm riêng thay vì dùng `messages_after`: `LIMIT` trên `ORDER BY
+        id ASC` cắt mất phần ĐUÔI. Khi nén hỏng nhiều lượt liền (agent CLI chết) thì
+        vùng chưa nén phình qua `limit`, và cửa sổ được dựng từ khúc CŨ — tức là câu
+        hỏi người ta vừa gõ không có trong prompt. Agent trả lời câu hỏi của hôm kia,
+        rất tự tin, và không có gì trong log nói rằng đã xảy ra chuyện đó.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT * FROM messages WHERE chat_id = ? AND id > ?
+                   ORDER BY id DESC LIMIT ?""",
+                (chat_id, after_id, limit),
+            ).fetchall()
+        return [self._row_to_message(r) for r in reversed(rows)]
+
+    def unsummarized_stats(self, chat_id: str, after_id: int) -> tuple[int, int]:
+        """`(số tin, tổng token)` của vùng chưa nén — đếm bằng SQL, KHÔNG có `LIMIT`.
+
+        Tín hiệu kích hoạt nén phải nhìn thấy toàn bộ vùng chưa nén. Đếm qua một truy
+        vấn có `LIMIT` thì chỉ số bão hoà ở đúng cái trần đó, và khi vùng chưa nén vượt
+        trần thì nén không còn biết là mình đang tụt lại.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT COUNT(*) c, COALESCE(SUM(tokens), 0) t
+                   FROM messages WHERE chat_id = ? AND id > ?""",
+                (chat_id, after_id),
+            ).fetchone()
+        return int(row["c"]), int(row["t"])
 
     def recent_messages(self, chat_id: str, limit: int) -> list[StoredMessage]:
         """`limit` tin gần nhất, trả về theo thứ tự CŨ → MỚI."""

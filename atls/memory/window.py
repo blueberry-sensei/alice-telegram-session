@@ -27,6 +27,12 @@ from atls.store import StoredMessage, Store, Summary
 # tokenizer thật. 5% là biên đủ mà không phí.
 _SAFETY = 0.95
 
+# Trần số tin ĐỌC LÊN để dựng cửa sổ. Không phải trần cửa sổ — trần cửa sổ tính bằng
+# token và nằm ở `budget`. Cái này chỉ để một chat 200k tin không kéo cả bảng vào RAM.
+# Lấy từ ĐUÔI (tin mới nhất), nên vượt trần chỉ mất phần cũ — thứ dù sao cũng không
+# lọt nổi vào 20k token.
+_MAX_ROWS = 2_000
+
 
 @dataclass(frozen=True)
 class ConversationWindow:
@@ -75,7 +81,8 @@ def build_window(
         summary_tokens = count_tokens(summary_text)
 
     after = summary.to_msg_id if summary else 0
-    raw = store.messages_after(chat_id, after, limit=2000)
+    # ĐUÔI, không phải đầu: xem `Store.messages_after_tail`.
+    raw = store.messages_after_tail(chat_id, after, limit=_MAX_ROWS)
 
     remaining = limit - summary_tokens
     picked: list[StoredMessage] = []
@@ -107,10 +114,14 @@ def build_window(
     )
 
 
-def raw_tokens_since_summary(store: Store, chat_id: str) -> tuple[int, list[StoredMessage]]:
-    """Bao nhiêu token thô đang nằm ngoài vùng đã nén? Đây là tín hiệu kích hoạt nén."""
+def raw_tokens_since_summary(store: Store, chat_id: str) -> tuple[int, int]:
+    """`(tổng token, số tin)` của vùng chưa nén. Đây là tín hiệu kích hoạt nén.
+
+    Đếm bằng SQL trên TOÀN BỘ vùng chưa nén, không qua một truy vấn có `LIMIT`: chỉ số
+    kích hoạt mà bão hoà ở trần thì đúng lúc hệ thống tụt lại xa nhất lại là lúc nó
+    ngừng báo động.
+    """
     summary = store.latest_summary(chat_id)
     after = summary.to_msg_id if summary else 0
-    raw = store.messages_after(chat_id, after, limit=2000)
-    total = sum(m.tokens or count_tokens(m.as_line()) for m in raw)
-    return total, raw
+    count, tokens = store.unsummarized_stats(chat_id, after)
+    return tokens, count

@@ -63,10 +63,60 @@ def test_lenh_co_tham_so():
     assert r.args == "cái feed hỏng tuần trước"
 
 
-def test_lenh_la_van_di_toi_agent():
-    """Lệnh không có trong SYSTEM_COMMANDS vẫn là gọi thẳng — agent tự hiểu."""
-    r = route("/deploy staging")
+def test_lenh_la_trong_chat_rieng_di_toi_agent():
+    """Lệnh không có trong SYSTEM_COMMANDS: chat riêng thì rõ ràng là gọi ta."""
+    r = route("/deploy staging", chat_type="private", chat_id="7")
     assert r.decision is Decision.ANSWER
+
+
+def test_lenh_la_khong_ghi_dich_trong_group_thi_khong_danh_thuc_agent():
+    """Group thật có nhiều bot. `/deploy` trần rất có thể là của bot khác — đánh thức
+    nhầm thì tốn một lượt CLI thật và một câu trả lời chen ngang."""
+    assert route("/deploy staging").decision is Decision.BACKGROUND
+
+
+def test_lenh_la_ghi_dich_ten_minh_thi_di_toi_agent():
+    assert route("/deploy@alice_bot staging").decision is Decision.ANSWER
+
+
+def test_lenh_la_kem_mention_thi_di_toi_agent():
+    assert route("/deploy staging @alice_bot").decision is Decision.ANSWER
+
+
+def test_lenh_gui_cho_bot_khac_bi_bo_qua():
+    """`/poll@bot_khac` — người ta đang nói với bot khác trong cùng phòng."""
+    r = route("/poll@bot_khac Ăn gì trưa nay?")
+    assert r.decision is Decision.BACKGROUND
+
+
+def test_lenh_he_thong_gui_cho_bot_khac_cung_bi_bo_qua():
+    assert route("/status@bot_khac").decision is Decision.BACKGROUND
+
+
+def test_duong_dan_khong_phai_la_lenh():
+    """`/home/user/log.txt` dán vào group không được coi là lệnh `/home/user/log.txt`."""
+    r = route("/var/log/nginx/error.log")
+    assert r.decision is Decision.BACKGROUND
+    assert r.command == ""
+
+
+def test_reply_vao_tin_cua_bot_khac_thi_khong_tra_loi():
+    """Cờ `is_bot` trần là sai trong group nhiều bot: người ta reply bot kia mà ta nhảy
+    vào trả lời — đúng kiểu lắm lời khiến bot bị tắt."""
+    r = route("vậy à", reply_to=bot_reply(username="bot_khac"))
+    assert r.decision is Decision.BACKGROUND
+
+
+def test_reply_vao_bot_khong_ro_username_thi_van_tra_loi():
+    """Telegram không cho biết username (hiếm) → rơi về cờ chung, thà thừa hơn câm."""
+    assert route("vậy à", reply_to=bot_reply(username="")).decision is Decision.ANSWER
+
+
+def test_tin_da_sua_khong_danh_thuc_agent():
+    """Telegram cấp update_id mới cho mỗi lần sửa. Để nó đi tiếp thì một người sửa lỗi
+    chính tả sẽ nhận câu trả lời thứ hai cho cùng một câu hỏi."""
+    r = route("@alice_bot check giùm cái feed", edited=True)
+    assert r.decision is Decision.BACKGROUND
 
 
 def test_tin_cua_bot_bi_bo_qua():

@@ -34,6 +34,11 @@ PROMPT_FILE = Path(__file__).resolve().parent.parent.parent / "prompts" / "compa
 # không tóm tắt.
 SUMMARY_BUDGET = 2_000
 
+# Mỗi lần nén gom tối đa ngần này tin. Vùng chưa nén có thể lớn hơn nhiều (nén hỏng
+# vài lượt liền), và nhồi cả 5.000 tin vào một prompt thì chính lượt nén tràn context.
+# Nén phần cũ nhất trước, phần còn lại để lượt sau — miễn là mỗi lượt đều tiến lên.
+COMPACT_BATCH = 400
+
 
 class Compactor:
     def __init__(
@@ -54,8 +59,8 @@ class Compactor:
         self._knowledge_dir = knowledge_dir
 
     def needs_compaction(self, chat_id: str) -> bool:
-        total, raw = raw_tokens_since_summary(self._store, chat_id)
-        return total > self._trigger and len(raw) > self._keep_raw
+        total, count = raw_tokens_since_summary(self._store, chat_id)
+        return total > self._trigger and count > self._keep_raw
 
     async def maybe_compact(self, chat_id: str) -> Summary | None:
         """Nén nếu cần. Trả về summary mới, hoặc `None` khi không cần / không nén được.
@@ -71,15 +76,24 @@ class Compactor:
             return None
 
     async def _compact(self, chat_id: str) -> Summary | None:
-        total, raw = raw_tokens_since_summary(self._store, chat_id)
-        if total <= self._trigger or len(raw) <= self._keep_raw:
-            return None
-
-        to_compact = raw[: -self._keep_raw]
-        if not to_compact:
+        total, count = raw_tokens_since_summary(self._store, chat_id)
+        if total <= self._trigger or count <= self._keep_raw:
             return None
 
         previous = self._store.latest_summary(chat_id)
+        after = previous.to_msg_id if previous else 0
+
+        # Số tin ĐƯỢC PHÉP nén = tất cả trừ `keep_raw` tin cuối, chặn trên bởi
+        # `COMPACT_BATCH`. Tính trên `count` thật (SQL, không LIMIT) chứ không trên độ
+        # dài của batch vừa đọc — lấy `batch[:-keep_raw]` là cắt nhầm 12 tin ở giữa
+        # vùng chưa nén, và 12 tin đó không bao giờ được nén cũng không bao giờ bị bỏ.
+        allowed = min(count - self._keep_raw, COMPACT_BATCH)
+        if allowed <= 0:
+            return None
+        to_compact = self._store.messages_after(chat_id, after, limit=allowed)
+        if not to_compact:
+            return None
+
         prompt = self._build_prompt(previous, to_compact)
 
         started = time.time()

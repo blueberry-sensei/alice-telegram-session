@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import re
 from pathlib import Path
 
@@ -99,29 +100,46 @@ class TelegramAPI:
         # Bỏ key None: Bot API từ chối `reply_to_message_id=null` thay vì coi như vắng mặt.
         data = {k: v for k, v in (payload or {}).items() if v is not None}
 
+        last = ""
         for attempt in range(5):
             try:
                 async with self._session.post(
                     self._url(method), json=data,
                     timeout=aiohttp.ClientTimeout(total=timeout + 15),
                 ) as resp:
-                    body = await resp.json(content_type=None)
-                    if body.get("ok"):
-                        return body.get("result")
-                    if resp.status == 429:
-                        wait = int((body.get("parameters") or {}).get("retry_after", 3))
-                        _log.warning("429 từ %s, chờ %ds", method, wait)
-                        await asyncio.sleep(wait)
-                        continue
-                    raise TelegramError(
-                        f"{method} thất bại ({resp.status}): {body.get('description')}"
-                    )
+                    raw = await resp.text()
+                    status = resp.status
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if attempt == 4:
                     raise TelegramError(f"{method}: mất kết nối — {exc}") from exc
                 # Backoff luỹ thừa: mạng chập chờn thì thử ngay lại chỉ làm tệ hơn.
                 await asyncio.sleep(2 ** attempt)
-        raise TelegramError(f"{method}: hết lượt thử")
+                continue
+
+            # Không phải JSON = reverse proxy / CDN trả trang lỗi HTML thay cho Bot API.
+            # Chuyện này CÓ xảy ra thật (502 từ Cloudflare) và trước đây nó ném
+            # `json.JSONDecodeError` xuyên qua mọi lớp bắt lỗi bên dưới rồi giết luôn
+            # vòng long-poll — daemon còn sống, còn ghi log khởi động, mà điếc vĩnh viễn.
+            # Đây là lỗi tạm thời, phải xử như mất kết nối chứ không phải như lỗi cứng.
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                last = f"HTTP {status}, phản hồi không phải JSON: {raw[:160]!r}"
+                if attempt == 4:
+                    raise TelegramError(f"{method}: {last}")
+                _log.warning("%s trả phản hồi lạ (%s), thử lại", method, last)
+                await asyncio.sleep(2 ** attempt)
+                continue
+
+            if body.get("ok"):
+                return body.get("result")
+            if status == 429:
+                wait = int((body.get("parameters") or {}).get("retry_after", 3))
+                _log.warning("429 từ %s, chờ %ds", method, wait)
+                await asyncio.sleep(wait)
+                continue
+            raise TelegramError(f"{method} thất bại ({status}): {body.get('description')}")
+        raise TelegramError(f"{method}: hết lượt thử{(' — ' + last) if last else ''}")
 
     # ── vòng đời ─────────────────────────────────────────────────────────────
 

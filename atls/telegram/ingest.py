@@ -27,6 +27,15 @@ _OFFSET_KEY = "polling_offset"
 class Ingest(Protocol):
     async def start(self) -> None: ...
     async def stop(self) -> None: ...
+    def background_tasks(self) -> list[asyncio.Task]:
+        """Task nền mà vòng đời app phải GIÁM SÁT, không chỉ tạo rồi quên.
+
+        Task tạo bằng `create_task` mà không ai `await` là task chết trong im lặng:
+        exception nằm lại trong object, không ai đọc, và thứ duy nhất lộ ra là bot
+        ngừng trả lời. App gom danh sách này vào `gather` để một vòng nhận tin chết
+        kéo cả tiến trình xuống — rồi service manager dựng lại.
+        """
+        ...
 
 
 class PollingIngest:
@@ -50,6 +59,9 @@ class PollingIngest:
         self._task = asyncio.create_task(self._loop(), name="atls-polling")
         _log.info("nhận tin bằng long-poll")
 
+    def background_tasks(self) -> list[asyncio.Task]:
+        return [self._task] if self._task else []
+
     async def stop(self) -> None:
         if self._task:
             self._task.cancel()
@@ -63,6 +75,13 @@ class PollingIngest:
         return int(raw) if raw else None
 
     async def _loop(self) -> None:
+        """Vòng nhận tin. Chỉ được thoát bằng CANCEL, không bằng bất kỳ lỗi nào khác.
+
+        Một daemon còn sống mà không còn nghe là hỏng tệ hơn một daemon chết: systemd
+        khởi động lại cái chết, còn cái điếc thì nằm im tới khi có người hỏi "sao Alice
+        không trả lời" — thường là vài giờ sau. Nên `except Exception` ở đây là cố ý,
+        không phải lười: mọi lỗi đều thành backoff rồi thử lại.
+        """
         backoff = 1
         while True:
             try:
@@ -78,6 +97,10 @@ class PollingIngest:
                 raise
             except TelegramError as exc:
                 _log.warning("long-poll lỗi: %s (thử lại sau %ds)", exc, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+            except Exception:  # noqa: BLE001 — xem docstring
+                _log.exception("long-poll lỗi ngoài dự kiến (thử lại sau %ds)", backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 
@@ -104,6 +127,10 @@ class WebhookIngest:
         self._secret = secret
         self._path = path
         self._runner: web.AppRunner | None = None
+
+    def background_tasks(self) -> list[asyncio.Task]:
+        # Webhook không có vòng lặp riêng: aiohttp giữ server sống bằng runner của nó.
+        return []
 
     async def start(self) -> None:
         app = web.Application()

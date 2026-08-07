@@ -59,6 +59,7 @@ class Config:
     # Telegram
     bot_token: str
     allowed_chats: frozenset[str]
+    allow_all_chats: bool
 
     # Ingest
     ingest: str
@@ -72,6 +73,7 @@ class Config:
     agent_model: str
     agent_cwd: Path
     agent_cmd: str
+    agent_skip_permissions: bool
 
     # Session
     session_max_age: int
@@ -113,8 +115,26 @@ class Config:
         object.__setattr__(self, "outbox_dir", self.data_dir / "outbox")
 
     def chat_allowed(self, chat_id: str | int) -> bool:
-        """Danh sách rỗng = nhận mọi chat. Tiện lúc thử, phải điền lúc chạy thật."""
-        return not self.allowed_chats or str(chat_id) in self.allowed_chats
+        """Chat này có được phép đánh thức agent không.
+
+        **Fail-CLOSED.** Danh sách rỗng nghĩa là KHÔNG chat nào được phép, trừ khi
+        `ATLS_ALLOW_ALL_CHATS=1` được bật một cách có ý thức.
+
+        Trước đây danh sách rỗng nghĩa là "nhận mọi chat", và đó là giá trị mặc định
+        trong `.env.example`. Ghép với hai thứ khác trong repo này — chat riêng thì tin
+        nào cũng trả lời (`router`), và adapter claude chạy kèm
+        `--dangerously-skip-permissions` — thì bất kỳ ai đoán ra username của bot đều
+        nhắn riêng và chạy được lệnh tuỳ ý trên máy chủ. Đúng một tuỳ chọn không được
+        phép fail-open thì lại là tuỳ chọn duy nhất fail-open.
+        """
+        if self.allowed_chats:
+            return str(chat_id) in self.allowed_chats
+        return self.allow_all_chats
+
+    @property
+    def chat_gate_is_open(self) -> bool:
+        """Đang chạy ở chế độ nhận mọi chat? `doctor` và lúc khởi động phải nói to."""
+        return not self.allowed_chats and self.allow_all_chats
 
     def ensure_dirs(self) -> None:
         for d in (self.data_dir, self.inbox_dir, self.outbox_dir):
@@ -141,6 +161,7 @@ def load(env_file: Path | None = None) -> Config:
     return Config(
         bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         allowed_chats=frozenset(_csv("ATLS_ALLOWED_CHATS")),
+        allow_all_chats=_bool("ATLS_ALLOW_ALL_CHATS"),
         ingest=(os.environ.get("ATLS_INGEST") or "polling").strip().lower(),
         webhook_url=os.environ.get("ATLS_WEBHOOK_URL", "").strip(),
         webhook_host=os.environ.get("ATLS_WEBHOOK_HOST") or "0.0.0.0",
@@ -150,6 +171,7 @@ def load(env_file: Path | None = None) -> Config:
         agent_model=os.environ.get("ATLS_AGENT_MODEL", "").strip(),
         agent_cwd=agent_cwd,
         agent_cmd=os.environ.get("ATLS_AGENT_CMD", "").strip(),
+        agent_skip_permissions=_bool("ATLS_AGENT_SKIP_PERMISSIONS", True),
         session_max_age=_int("ATLS_SESSION_MAX_AGE", 12 * 3600),
         session_idle=_int("ATLS_SESSION_IDLE", 3 * 3600),
         window_tokens=window,

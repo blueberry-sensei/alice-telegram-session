@@ -82,3 +82,28 @@ def test_redact_chuoi_rong():
 
 def test_looks_sensitive_bat_duoc_key():
     assert looks_sensitive(f"token: {FAKE_KEYS['slack']}")
+
+
+def test_nhan_cua_khoa_anthropic_khong_bi_mau_chung_nuot():
+    """`sk-ant-…` khớp CẢ hai mẫu, và mẫu chạy trước là mẫu thắng.
+
+    Đặt mẫu chung (`sk-…`) trước thì luật anthropic thành code chết: vẫn che được,
+    nhưng nhãn luôn báo sai loại — mà gắn nhãn đúng loại là toàn bộ lý do có nhãn.
+    """
+    out = redact(f"khoá là {FAKE_KEYS['anthropic']}")
+    assert "anthropic-key" in out
+    assert "api-key" not in out
+
+
+def test_moi_dinh_dang_ra_dung_nhan_cua_no():
+    expected = {
+        "telegram-token": "telegram-token",
+        "anthropic": "anthropic-key",
+        "openai": "api-key",
+        "github": "github-token",
+        "slack": "slack-token",
+        "google": "google-key",
+        "aws": "aws-key",
+    }
+    for key, label in expected.items():
+        assert label in redact(FAKE_KEYS[key]), f"{key} phải ra nhãn {label}"
