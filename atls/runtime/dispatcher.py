@@ -127,7 +127,7 @@ class Dispatcher:
             prompt = self._build_prompt(window, choice, batch, route)
 
             # 6. Gọi agent, vừa chạy vừa giữ ack.
-            result = await self._invoke(chat_id, prompt, choice)
+            result = await self._invoke(chat_id, prompt, choice, batch)
 
         elapsed = time.time() - started
 
@@ -175,7 +175,13 @@ class Dispatcher:
         _log.info("chat %s: trả lời %d ký tự trong %.1fs (cửa sổ %d token)",
                   chat_id, len(answer), elapsed, window.tokens)
 
-    async def _invoke(self, chat_id: str, prompt: str, choice) -> AgentResult:
+    async def _invoke(
+        self, chat_id: str, prompt: str, choice, batch: list[Incoming]
+    ) -> AgentResult:
+        # `batch` phải là THAM SỐ. Nhánh resume-hỏng bên dưới cần nó để dựng lại cửa
+        # sổ hội thoại; trước đây nó đọc `batch` như biến toàn cục nên nhánh này nổ
+        # NameError thay vì chạy lại lượt — và nhánh này chỉ chạy khi Alice sống dài
+        # ngày, tức là không bao giờ lộ ra lúc dev.
         req = AgentRequest(
             prompt=prompt, system=self._system,
             session_id=choice.row.agent_session_id, resume=choice.resume,
