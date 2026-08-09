@@ -34,6 +34,69 @@ STALE_SECONDS = 30 * 60
 HEARTBEAT_SECONDS = 30
 
 
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    # `os.kill(pid, 0)` KHÔNG dùng được trên Windows để hỏi thăm. `signal.CTRL_C_EVENT`
+    # bằng đúng 0, nên CPython hiểu "signal 0" là Ctrl+C và gọi
+    # `GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid)` — tức BẮN Ctrl+C thật vào nhóm tiến
+    # trình của console. Hỏng theo cả hai chiều:
+    #
+    #   • chung console → tiến trình kia (và cả tiến trình hỏi) ăn Ctrl+C. Sự kiện tới
+    #     bất đồng bộ nên KeyboardInterrupt rơi vào một chỗ ngẫu nhiên vài nhịp sau,
+    #     trông như treo hoặc như lỗi của module khác.
+    #   • khác console — daemon chạy bằng scheduled task chính là ca này — không có
+    #     console chung để bắn nên ném OSError. `_alive()` nuốt OSError rồi trả False,
+    #     tức coi khoá là chết, xoá nó, và daemon THỨ HAI khởi động được. Đúng thứ lớp
+    #     khoá này sinh ra để chặn.
+    #
+    # Nên hỏi thẳng hệ điều hành, và không gửi gì cả.
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _SYNCHRONIZE = 0x00100000
+    _WAIT_TIMEOUT = 0x00000102
+    _ERROR_ACCESS_DENIED = 5
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    _kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def _pid_alive(pid: int) -> bool:
+        handle = _kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION | _SYNCHRONIZE, False, pid
+        )
+        if not handle:
+            # Mở không được vì bị từ chối quyền nghĩa là nó CÓ tồn tại, chỉ là của
+            # user khác — giống nhánh PermissionError bên POSIX. Các lỗi còn lại
+            # (chủ yếu ERROR_INVALID_PARAMETER) nghĩa là không có PID đó.
+            return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+        try:
+            # Handle tiến trình được "signal" khi tiến trình kết thúc. Chờ 0 mili giây:
+            # còn timeout = còn chạy. Dùng cái này thay cho `GetExitCodeProcess` vì mã
+            # thoát 259 trùng đúng hằng số STILL_ACTIVE — một tiến trình lỡ thoát với
+            # mã 259 sẽ bị nhìn nhầm là còn sống mãi mãi.
+            return _kernel32.WaitForSingleObject(handle, 0) == _WAIT_TIMEOUT
+        finally:
+            _kernel32.CloseHandle(handle)
+
+else:
+
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)  # POSIX: signal 0 = chỉ hỏi "có tồn tại không"
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # tồn tại nhưng khác user
+        except OSError:
+            return False
+
+
 class SingletonLock:
     """Một daemon một máy. Dùng PID **và** nhịp tim để phân biệt khoá chết với khoá sống.
 
@@ -92,7 +155,11 @@ class SingletonLock:
 
     def _alive(self) -> bool:
         """PID trong file còn sống không? Không đọc được thì coi là CHẾT — thà nhận
-        nhầm quyền còn hơn không bao giờ khởi động lại được sau một lần máy sập."""
+        nhầm quyền còn hơn không bao giờ khởi động lại được sau một lần máy sập.
+
+        Hàm này chỉ được HỎI, tuyệt đối không được gửi tín hiệu cho ai — xem ghi chú
+        ở `_pid_alive` đầu file.
+        """
         try:
             pid = int(self._path.read_text(encoding="utf-8").splitlines()[0])
         except (OSError, ValueError, IndexError):
@@ -100,15 +167,7 @@ class SingletonLock:
         # KHÔNG có ngoại lệ "pid == os.getpid() thì coi là chết". Nghe hợp lý (dọn lock
         # của chính mình) nhưng nó phá đúng thứ lớp này sinh ra để làm: hai đối tượng
         # SingletonLock trong CÙNG tiến trình sẽ đều chiếm được lock.
-        try:
-            os.kill(pid, 0)  # signal 0 = chỉ hỏi "có tồn tại không"
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True  # tồn tại nhưng khác user
-        except OSError:
-            return False
+        return _pid_alive(pid)
 
     def release(self) -> None:
         if self._held:

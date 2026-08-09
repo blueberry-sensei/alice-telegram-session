@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 import time
 
 import pytest
@@ -213,6 +215,36 @@ def test_singleton_khong_cuop_lock_con_nhip_tim(tmp_path):
         assert not SingletonLock(path).acquire()
     finally:
         first.release()
+
+
+def test_alive_hoi_tham_chu_khong_ban_tin_hieu(tmp_path):
+    """Hỏi "chủ khoá còn sống không" thì chỉ được HỎI, không được ĐỘNG tới nó.
+
+    Trên Windows `os.kill(pid, 0)` không phải câu hỏi: `signal.CTRL_C_EVENT` bằng đúng
+    0, nên nó bắn Ctrl+C thật vào nhóm tiến trình console. Bản cũ dùng đúng lệnh đó,
+    và vì PID trong file lock lúc chạy test là PID của chính tiến trình pytest nên
+    suite tự bắn vào chân mình — KeyboardInterrupt rơi vào một chỗ ngẫu nhiên vài nhịp
+    sau, trông y như treo.
+
+    Test này canh cả hai vế bằng một tiến trình vô can làm vật chứng: câu trả lời phải
+    đúng, và nạn nhân phải còn sống nguyên sau khi bị hỏi.
+    """
+    victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    path = tmp_path / "daemon.lock"
+    try:
+        path.write_text(f"{victim.pid}\n{time.time()}\n", encoding="utf-8")
+
+        assert not SingletonLock(path).acquire(), \
+            "chủ khoá còn sống mà vẫn chiếm được = hai daemon cùng một token"
+        time.sleep(0.5)
+        assert victim.poll() is None, "hỏi thăm mà giết mất chủ khoá"
+    finally:
+        victim.kill()
+        victim.wait(timeout=10)
+
+    lock = SingletonLock(path)
+    assert lock.acquire(), "chủ khoá chết rồi mà không giành lại được thì kẹt vĩnh viễn"
+    lock.release()
 
 
 async def test_resource_lock_loai_tru_lan_nhau(tmp_path):
