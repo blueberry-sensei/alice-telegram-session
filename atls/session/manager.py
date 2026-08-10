@@ -45,11 +45,72 @@ class SessionChoice:
         return not self.resume
 
 
+def parse_quiet_window(raw: str) -> tuple[int, int] | None:
+    """`"9-13"` → `(9, 13)`. Rỗng hoặc sai định dạng → `None` (không hạn chế giờ).
+
+    Sai định dạng không được ném lỗi: cấu hình hỏng mà làm daemon không khởi động
+    được thì mất cả kênh chat, trong khi thứ hỏng chỉ là một tối ưu về thời điểm.
+    """
+    parts = (raw or "").split("-")
+    if len(parts) != 2:
+        return None
+    try:
+        start, end = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if not (0 <= start <= 23 and 0 <= end <= 23):
+        return None
+    return (start, end)
+
+
+def _hour_in_window(hour: int, window: tuple[int, int]) -> bool:
+    """Giờ địa phương có nằm trong khung `[start, end)` không — kể cả khung vắt qua nửa đêm."""
+    start, end = window
+    if start == end:
+        return True
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
 class SessionManager:
-    def __init__(self, store: Store, *, max_age: int, idle: int) -> None:
+    """Vòng đời session, cộng một luật về *thời điểm* được phép xoay.
+
+    Xoay session làm agent quên ngữ cảnh làm việc trong vài giây đầu lượt sau. Điều
+    đó vô hại lúc 10 giờ sáng và phiền lúc thị trường đang chạy — đúng lúc người
+    dùng hỏi "lệnh sao rồi" thì lại là lúc agent vừa mất hết context phiên trước.
+
+    Nên: hạn tuổi/im lặng tới hạn ngoài khung yên tĩnh thì **hoãn**, chờ tới khung
+    yên tĩnh mới xoay. Có trần cứng `defer_ceiling` để một session không hoãn mãi —
+    quá trần thì xoay bất kể giờ nào, vì rác context tích tụ mới là cái hại thật.
+
+    `/reset` và `resume_failed` không đi qua luật này: một cái là người dùng chủ
+    động, một cái là session bên CLI đã chết sẵn.
+    """
+
+    def __init__(
+        self,
+        store: Store,
+        *,
+        max_age: int,
+        idle: int,
+        quiet_window: tuple[int, int] | None = None,
+        defer_ceiling: int | None = None,
+    ) -> None:
         self._store = store
         self._max_age = max_age
         self._idle = idle
+        self._quiet_window = quiet_window
+        #: Mặc định gấp đôi hạn tuổi: hoãn được một vòng, không hoãn được hai.
+        self._defer_ceiling = defer_ceiling if defer_ceiling is not None else max_age * 2
+
+    def _may_rotate_now(self, s: SessionRow, reason: str, now: float) -> bool:
+        """Đúng lúc để xoay chưa? Chỉ hoãn vì lý do hết hạn, không hoãn vì lý do khác."""
+        if self._quiet_window is None or reason not in ("max_age", "idle"):
+            return True
+        if now - s.created_at > self._defer_ceiling:
+            return True
+        return _hour_in_window(time.localtime(now).tm_hour, self._quiet_window)
 
     def choose(self, chat_id: str, agent: str) -> SessionChoice:
         now = time.time()
@@ -59,6 +120,12 @@ class SessionManager:
             return self._open(chat_id, agent, "")
 
         reason = self._rotation_reason(current, agent, now)
+        if reason and not self._may_rotate_now(current, reason, now):
+            _log.info(
+                "hoãn xoay session chat %s (%s): ngoài khung yên tĩnh %s",
+                chat_id, reason, self._quiet_window,
+            )
+            reason = ""
         if reason:
             self._store.close_session(current.id, reason)
             _log.info(

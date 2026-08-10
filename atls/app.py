@@ -27,7 +27,7 @@ from atls.runtime.debounce import Debouncer
 from atls.runtime.dispatcher import Dispatcher
 from atls.runtime.locks import ChatLockRegistry
 from atls.runtime.router import Decision, classify, merge
-from atls.session import SessionManager
+from atls.session import SessionManager, parse_quiet_window
 from atls.store import Store
 from atls.telegram.api import TelegramAPI
 from atls.telegram.ingest import build_ingest
@@ -46,7 +46,10 @@ class App:
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._locks = ChatLockRegistry()
         self._sessions = SessionManager(
-            self._store, max_age=cfg.session_max_age, idle=cfg.session_idle
+            self._store,
+            max_age=cfg.session_max_age,
+            idle=cfg.session_idle,
+            quiet_window=parse_quiet_window(cfg.session_quiet_window),
         )
         self._api: TelegramAPI | None = None
         self._tasks: list[asyncio.Task] = []

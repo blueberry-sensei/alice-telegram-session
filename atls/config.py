@@ -76,6 +76,10 @@ class Config:
     agent_skip_permissions: bool
 
     # Session
+    #: Khung giờ địa phương `"start-end"` được phép xoay session, rỗng = xoay bất kỳ lúc nào.
+    #: Xoay lúc thị trường đang chạy nghĩa là mất ngữ cảnh đúng lúc người dùng hỏi
+    #: về lệnh đang mở. Trần hoãn nằm ở `SessionManager`, nên không hoãn được mãi.
+    session_quiet_window: str
     session_max_age: int
     session_idle: int
 
@@ -172,6 +176,7 @@ def load(env_file: Path | None = None) -> Config:
         agent_cwd=agent_cwd,
         agent_cmd=os.environ.get("ATLS_AGENT_CMD", "").strip(),
         agent_skip_permissions=_bool("ATLS_AGENT_SKIP_PERMISSIONS", True),
+        session_quiet_window=os.environ.get("ATLS_SESSION_QUIET_WINDOW", "").strip(),
         session_max_age=_int("ATLS_SESSION_MAX_AGE", 12 * 3600),
         session_idle=_int("ATLS_SESSION_IDLE", 3 * 3600),
         window_tokens=window,
