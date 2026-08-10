@@ -132,7 +132,21 @@ class SubprocessAdapter:
             # Nhóm tiến trình riêng để `killpg` quét được cả cây con.
             kwargs["preexec_fn"] = os.setsid
         else:
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            # CREATE_NO_WINDOW, không chỉ nhóm tiến trình riêng.
+            #
+            # Agent CLI là ứng dụng console, và MỖI công cụ nó gọi (bash, powershell,
+            # git) lại là một ứng dụng console nữa. Thiếu cờ này thì mỗi lệnh con bật
+            # một cửa sổ đen trên màn hình người dùng — đo được vài chục cái trong một
+            # lượt trả lời. Đó là "terminal spam" tối 2026-08-10, và nó không chỉ khó
+            # chịu: một cửa sổ bật lên có thể cướp tiêu điểm bàn phím giữa lúc người
+            # ta đang gõ việc khác.
+            #
+            # CREATE_NO_WINDOW cấp cho tiến trình con một console KHÔNG có cửa sổ; cả
+            # cây con thừa kế nó nên không đứa nào vẽ được gì lên màn hình. Đầu ra vẫn
+            # đi về pipe như cũ, không mất dòng log nào.
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            )
 
         # Resolve the executable the same way `is_available` does, and for the
         # same reason it has to be said out loud: on Windows the two do NOT
