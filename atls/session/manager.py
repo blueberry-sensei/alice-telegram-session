@@ -151,6 +151,19 @@ class SessionManager:
         row = self._store.create_session(chat_id, agent, str(uuid.uuid4()))
         return SessionChoice(row=row, resume=False, rotated_from=reason)
 
+    def on_claimed(self, choice: SessionChoice) -> None:
+        """CLI đã chạy với `--session-id` → id đó **đã tồn tại trên đĩa**, kể cả khi lượt hỏng.
+
+        Đây là chỗ Alice câm cả buổi chiều 2026-08-10: lượt đầu tạo session rồi chết
+        giữa chừng, `started` vẫn False, nên mọi lượt sau lại gọi `--session-id` vào
+        đúng id đó và ăn `Session ID ... is already in use` — vĩnh viễn, không tự thoát.
+        `started` phải mang nghĩa "CLI đã chiếm id", không phải "lượt đó thành công".
+
+        Đánh dấu sớm không có rủi ro ngược: nếu CLI chết TRƯỚC khi kịp tạo session thì
+        lượt sau đi `--resume` vào id chưa có, hỏng, và nhánh resume-hỏng mở session sạch.
+        """
+        self._store.mark_session_started(choice.row.id)
+
     def on_success(self, choice: SessionChoice) -> None:
         self._store.touch_session(choice.row.id, started=True)
 

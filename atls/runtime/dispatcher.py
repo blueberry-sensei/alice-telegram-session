@@ -37,6 +37,15 @@ _log = log.get("runtime.dispatcher")
 
 SYSTEM_FILE = Path(__file__).resolve().parent.parent.parent / "prompts" / "system.md"
 
+#: CLI báo "id này đã có rồi" — không phải lỗi của lượt, mà là dấu vết một lượt trước
+#: chết sau khi đã tạo session. Khớp lỏng vì mỗi CLI viết một kiểu hoa/thường.
+_TAKEN_MARKERS = ("already in use", "session already exists")
+
+
+def session_id_taken(stderr: str | None) -> bool:
+    low = (stderr or "").lower()
+    return any(marker in low for marker in _TAKEN_MARKERS)
+
 
 class Dispatcher:
     def __init__(
@@ -189,11 +198,17 @@ class Dispatcher:
         )
         result = await self._adapter.run(req)
 
-        # Resume hỏng: mở session sạch và chạy lại CÙNG prompt. Prompt đã chứa cửa sổ
-        # hội thoại nếu session cũ là fresh; nếu nó là resume thì prompt chưa có cửa
-        # sổ — nên phải dựng lại trước khi thử lần hai.
-        if not result.ok and choice.resume:
-            _log.info("chat %s: resume thất bại, mở session mới và chạy lại", chat_id)
+        # Chạy với `--session-id` là ĐÃ CHIẾM id đó trên đĩa, dù lượt có hỏng hay không.
+        # Ghi ngay, trước mọi nhánh thoát: nếu chỉ ghi khi thành công thì một lượt chết
+        # dở khoá chết cả chat ở `Session ID ... is already in use`, không có đường ra.
+        if not choice.resume:
+            self._sessions.on_claimed(choice)
+
+        # Mở session sạch rồi chạy lại CÙNG prompt, cho cả hai kiểu hỏng thuộc về id:
+        # resume vào id không còn, và tạo mới vào id đã bị chiếm. Prompt đã chứa cửa sổ
+        # hội thoại nếu session cũ là fresh; nếu nó là resume thì chưa — phải dựng lại.
+        if not result.ok and (choice.resume or session_id_taken(result.stderr)):
+            _log.info("chat %s: session cũ dùng không được, mở session mới và chạy lại", chat_id)
             fresh = self._sessions.on_resume_failed(chat_id, choice, self._adapter.name)
             window = build_window(
                 self._store, chat_id, self._cfg.window_tokens,

@@ -347,6 +347,16 @@ class Store:
             created_at=now, last_used_at=now, turns=0,
         )
 
+    def mark_session_started(self, session_id: int) -> None:
+        """CLI đã *chiếm* id này rồi — không đếm lượt, không đụng last_used_at.
+
+        Khác `touch_session` ở chỗ nó ghi một sự thật về phía CLI ("id này đã tồn tại
+        trên đĩa"), không phải một sự thật về hội thoại ("vừa có thêm một lượt").
+        """
+        with self._lock:
+            self._conn.execute("UPDATE sessions SET started = 1 WHERE id = ?", (session_id,))
+            self._conn.commit()
+
     def touch_session(self, session_id: int, *, started: bool = True) -> None:
         with self._lock:
             self._conn.execute(
